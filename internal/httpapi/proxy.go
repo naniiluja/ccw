@@ -256,19 +256,6 @@ func (t *respTap) bytes() []byte {
 	return out
 }
 
-// writeError replies with a JSON body that never names a credential; on /v1
-// in the caller's API envelope.
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeAPIError(w, status, "", "", msg)
-}
-
-func writeLegacyError(w http.ResponseWriter, status int, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	b, _ := json.Marshal(map[string]string{"error": msg})
-	w.Write(b)
-}
-
 func (a *api) connection(id string) (store.Connection, error) {
 	list, err := a.store.ListConnections()
 	if err != nil {

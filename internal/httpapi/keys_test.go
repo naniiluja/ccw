@@ -4,9 +4,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/naniiluja/ccw/internal/store"
 )
@@ -112,5 +115,52 @@ func TestKeyCreationHasNoTrustedFlag(t *testing.T) {
 	id, _ := created["id"].(string)
 	if rec := postKey(h, "/keys/"+id+"/trusted", `{"trusted":true}`, ck, ""); rec.Code == http.StatusOK {
 		t.Errorf("POST /keys/{id}/trusted answered 200: %s", rec.Body.String())
+	}
+}
+
+func TestKeyLimiterSlidesOverSixtySeconds(t *testing.T) {
+	l := keyLimiter{seen: map[string][]time.Time{}}
+	t0 := time.Unix(1_000_000, 0)
+	for i, at := range []time.Duration{0, 20 * time.Second} {
+		if ok, _ := l.allow("k", 2, t0.Add(at)); !ok {
+			t.Fatalf("request %d refused", i)
+		}
+	}
+	// Third within the minute: refused until the first one is 60 s old.
+	if ok, wait := l.allow("k", 2, t0.Add(30*time.Second)); ok || wait != 30*time.Second {
+		t.Errorf("third: ok=%v wait=%v, want refused for 30s", ok, wait)
+	}
+	if n := l.count("k", t0.Add(30*time.Second)); n != 2 {
+		t.Errorf("count = %d, the refused request must not count", n)
+	}
+	if ok, _ := l.allow("k", 2, t0.Add(61*time.Second)); !ok {
+		t.Error("refused after the first request left the window")
+	}
+	// A key that went quiet holds no memory.
+	l.count("k", t0.Add(10*time.Minute))
+	if _, held := l.seen["k"]; held {
+		t.Error("an idle key is still held")
+	}
+}
+
+func TestUsageDayIn(t *testing.T) {
+	// 2026-01-01 23:30 UTC is 2026-01-02 06:30 in GMT+7: the request counts
+	// toward the second, not the first.
+	in := time.Date(2026, 1, 1, 23, 30, 0, 0, time.UTC)
+	if got := usageDayIn(in, time.FixedZone("+07", 7*60*60)); got != "2026-01-02" {
+		t.Fatalf("GMT+7 day = %s, want 2026-01-02", got)
+	}
+	if got := usageDayIn(in, time.UTC); got != "2026-01-01" {
+		t.Fatalf("UTC day = %s, want 2026-01-01", got)
+	}
+}
+
+func TestReportLocationDefaultsToGMT7(t *testing.T) {
+	os.Unsetenv("CCW_TZ")
+	tzOnce = sync.Once{}
+	loc := reportLocation()
+	_, offset := time.Now().In(loc).Zone()
+	if offset != 7*60*60 {
+		t.Fatalf("default offset = %d, want %d", offset, 7*60*60)
 	}
 }
