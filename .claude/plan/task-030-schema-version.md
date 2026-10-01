@@ -23,11 +23,11 @@
 
 ## Files to touch
 - internal/drift/names_test.go — helper `oldShapeFields` đặt lại `user_version = 0` để giả lập DB cũ (test buộc)
-- internal/store/models.go, errors.go, drift.go, oauth.go — chuyển migration rải rác vào danh sách đánh số
+- internal/store/models.go, internal/store/errors.go, internal/store/drift.go, internal/store/oauth.go, internal/store/apikey.go — chuyển migration rải rác vào danh sách đánh số
 - `internal/store/store.go` — danh sách migration đánh số, chạy theo `user_version`, mỗi bước trong transaction.
 - `internal/store/models.go`, `errors.go`, `drift.go`, `oauth.go`, `apikey.go` — chuyển các `ALTER TABLE` nằm rải rác vào danh sách migration.
 - Không còn `internal/store/contract.go`: file đó (cùng `MigrateContract`) bị xóa ở task 014, nên task này chạy sau 014.
-- `internal/store/store_test.go` (hoặc file test mới cùng thư mục) — ba test trên.
+- internal/store/migrate_test.go — test mới (hoặc `internal/store/store_test.go`) — ba test trên.
 
 ## Steps (thin end-to-end slice)
 1. Write the failing test (cover the slice's user-visible behavior, not just one layer)
