@@ -60,11 +60,6 @@ func generatedID(k string) bool {
 	return idPrefixed.MatchString(k) && !realFieldName(k)
 }
 
-// IDLike reports whether an object key is a generated identifier or dynamic name.
-func IDLike(k string) bool {
-	return generatedID(k)
-}
-
 // WideObject reports whether an object is wider than the API threshold (96 keys).
 func WideObject(n int) bool {
 	return n > 96

@@ -81,17 +81,6 @@ func Hidden(name string) bool {
 	return ok && p.Endpoint == SystemOne && p.ID == name
 }
 
-// SystemOneNames are the names a System One call can use.
-func SystemOneNames() []string {
-	var out []string
-	for _, p := range profiles {
-		if p.Endpoint == SystemOne {
-			out = append(out, p.Aliases...)
-		}
-	}
-	return out
-}
-
 // ProfileIDs are the chat and Responses models ccw knows, for the list a
 // dead upstream leaves behind.
 func ProfileIDs() []string {
