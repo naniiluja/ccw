@@ -1,30 +1,34 @@
-# Tooling (available skills / MCP / subagents — WHEN TO USE)
+# Tooling (skills / MCP / subagents có sẵn, KHI NÀO dùng)
 
-A catalog of this project's tools, with **when to use** each, so future-session agents can decide. Updated by `/ccf:updatespec` whenever a new tool is added.
+Danh mục công cụ của dự án kèm **khi nào dùng**, để agent ở phiên sau tự quyết. `/ccf:updatespec` cập nhật file này khi có công cụ mới.
 
 ## MCP servers
-- **context7** — look up current docs for libraries/frameworks. **Use when:** you need a lib's API syntax/best practice/migration. How: `resolve-library-id` → `query-docs`. Ghi chú: phiên chạy ở chế độ không tương tác có thể bị từ chối quyền gọi công cụ này; khi đó fetch tài liệu chính thức (`go.dev`, `sqlite.org`) thay thế và ghi rõ nguồn.
-- **microsoft-learn** — look up Microsoft/.NET/Azure docs. **Use when:** working with a Microsoft platform. Dự án Go này thường không cần.
-- **shadcn** — tra cứu và cài component từ registry shadcn/ui (khai báo ở `.mcp.json`, chạy qua `npx -y shadcn@latest mcp`). **Use when:** cần tham khảo thiết kế/markup một component shadcn để mô phỏng lại. Ghi chú: UI cũ đã gỡ, bản viết lại chưa chọn stack; chưa nên chạy lệnh `add` cho tới khi có `components.json` và quyết định stack.
+- **context7** (plugin ccf): tra tài liệu hiện hành của thư viện, framework. **Dùng khi:** cần cú pháp API, best practice, migration. Cách: `resolve-library-id` rồi `query-docs`. Phiên không tương tác có thể bị từ chối quyền gọi; khi đó fetch tài liệu chính thức (`go.dev`, `pkg.go.dev`, `sqlite.org`) và ghi rõ nguồn.
+- **microsoft-learn** (plugin ccf): tài liệu Microsoft, .NET, Azure. Dự án Go này thường không cần.
+- **shadcn** (khai báo ở `.mcp.json`, chạy `npx -y shadcn@latest mcp`): tra cứu component shadcn/ui. **Dùng khi:** cần tham khảo markup một component để mô phỏng. UI cũ đã gỡ, bản viết lại chưa chọn stack; chưa chạy lệnh `add` cho tới khi có `components.json` và quyết định stack.
+- **gopls** (nếu phiên có, không khai báo trong `.mcp.json`): `go_symbol_references`, `go_file_context`, `go_diagnostics`. **Dùng khi:** xóa, gộp hay đổi tên symbol, để không sót tham chiếu. Có thể không resolve bên trong một git worktree; khi đó dùng `grep` và `go build ./...`.
 
 ## Skills
-- **ccf:plan** — lên kế hoạch một tính năng thành các vertical slice. **Use when:** bắt đầu tính năng mới, ở plan mode.
-- **ccf:cook** — chạy backlog theo wave song song. **Use when:** có nhiều task độc lập trong `.claude/plan/`.
-- **ccf:check** — review độc lập theo spec. **Use when:** sau khi task chuyển `in-review`.
-- **ccf:updatespec** — làm mới spec và memory. **Use when:** cuối phiên có bài học hoặc công cụ mới.
-- **claude-api** — tham chiếu Anthropic SDK và tham số API. **Use when:** sửa code dịch Anthropic Messages, tool use, thinking blocks trong `internal/translate`.
+- **ccf:plan**: lên kế hoạch một tính năng thành các vertical slice. **Dùng khi:** bắt đầu tính năng mới, ở plan mode.
+- **ccf:cook**: chạy backlog theo wave song song, mỗi task một worktree. **Dùng khi:** có nhiều task độc lập trong `.claude/plan/`.
+- **ccf:check**: review độc lập theo spec. **Dùng khi:** task chuyển `in-review`.
+- **ccf:updatespec**: làm mới spec và memory. **Dùng khi:** cuối phiên có bài học hoặc công cụ mới.
+- **claude-api**: tham chiếu Anthropic SDK và tham số API. **Dùng khi:** sửa code dịch Anthropic Messages, tool use, thinking block trong `internal/translate`.
 
 ## Subagents (CCF)
-Every CCF subagent is READ-ONLY: discovery, review or best-practice grounding, never coding. Code is written either directly in the main session (a single task after /ccf:plan) or by /ccf:cook's task agents, one per task of a wave, each in its own worktree created with `isolation: "worktree"`; a writer never runs in the main checkout.
-- **ccf-codebase-analyzer** — map or scope the codebase. **Use when:** onboarding (/ccf:init) or before planning a change (/ccf:plan).
-- **ccf-spec-checker** — review conformance/SOLID. **Use when:** /ccf:check.
-- **ccf-best-practice-researcher** — fetch best practices. **Use when:** grounding a decision.
+Mọi subagent CCF **chỉ đọc**: khám phá, review, tìm best practice, không viết code. Code được viết hoặc trực tiếp trong phiên chính (một task sau `/ccf:plan`), hoặc bởi agent task của `/ccf:cook`, mỗi agent một worktree tạo bằng `isolation: "worktree"`; không writer nào chạy trong checkout chính.
+- **ccf-codebase-analyzer**: lập bản đồ hoặc khoanh vùng codebase. **Dùng khi:** onboarding (`/ccf:init`) hoặc trước khi lên kế hoạch (`/ccf:plan`).
+- **ccf-spec-checker**: review tuân thủ spec và SOLID. **Dùng khi:** `/ccf:check`.
+- **ccf-scope-checker**: kiểm diff có khớp phạm vi task. **Dùng khi:** `/ccf:check`, song song với spec-checker.
+- **ccf-best-practice-researcher**: lấy best practice có trích nguồn. **Dùng khi:** cần căn cứ cho một quyết định.
 
 ## Lệnh thường dùng
-- Build: `go build ./...`. Chạy cục bộ: `go run ./cmd/ccw -addr 127.0.0.1:20130 -db ccw.db`. Lần đầu: `-enroll` rồi `-show-totp` để lấy TOTP secret.
-- Build npm đa nền tảng: `scripts/npm-build.sh` (cần `NPM_SCOPE` khi publish). Không chạy publish thủ công; release đi qua tag `v*`.
+- Kiểm toàn bộ trước commit: `bash scripts/check.sh` (gofmt, go vet, staticcheck, gocyclo, `go test -race ./...` gồm test kiến trúc). Giống hệt CI. Lần đầu tải staticcheck, gocyclo và toolchain `go1.27.1` qua `go run`, nên cần mạng.
+- Build: `go build ./...`. Chạy cục bộ: `go run ./cmd/ccw -addr 127.0.0.1:20130 -db ccw.db`. Lần chạy đầu in mật khẩu dashboard **một lần** ra stderr (lưu ngay vào trình quản lý mật khẩu); hoặc đặt `CCW_PASSWORD` (tối thiểu 12 ký tự). Quên mật khẩu: `go run ./cmd/ccw -db ccw.db -reset-password`. Thử nghiệm dùng DB tạm (`-db /tmp/ccw-check.db`), không dùng DB thật.
+- Đo nhanh: `find internal cmd -name '*.go' -not -name '*_test.go' | wc -l` (72), `find internal/httpapi -maxdepth 1 -name '*.go' -not -name '*_test.go' | wc -l` (21), `go run golang.org/x/tools/cmd/deadcode@latest -test ./...` khi dọn code chết.
+- Build npm đa nền tảng: `scripts/npm-build.sh` (cần `NPM_SCOPE` khi publish). Không publish thủ công; release đi qua tag `v*`.
 
-## System memory vs Spec (WHEN to write where)
-- **Spec** (this file + other rules): project rules that are derivable / belong to the repo. Lower weight (user message).
-- **Memory** (`~/.claude/projects/<path>/memory/`): `feedback` anti-mistakes + `user` preferences. Higher weight (system prompt) → Claude repeats fewer mistakes. Updated via `/ccf:updatespec`. **Do not duplicate** CLAUDE.md content.
-- **MEMORY.md is a pure index** — only its first **200 lines or 25KB** (whichever first) load per session, so keep it lean (curate when near). The strongest tier is `feedback` (record wins + losses, with a mandatory `Why`).
+## System memory vs Spec (ghi ở đâu)
+- **Spec** (file này và các rule khác): luật của dự án, suy ra được từ repo. Trọng số thấp hơn (user message).
+- **Memory** (`~/.claude/projects/<path>/memory/`): `feedback` chống lặp lỗi và `user` preference. Trọng số cao hơn (system prompt). Cập nhật qua `/ccf:updatespec`. **Không** chép lại nội dung CLAUDE.md.
+- **MEMORY.md chỉ là mục lục**: mỗi phiên chỉ nạp 200 dòng hoặc 25KB đầu (cái nào tới trước), nên giữ gọn. Tầng mạnh nhất là `feedback` (ghi cả thắng lẫn thua, bắt buộc có `Why`).
