@@ -1,0 +1,1 @@
+{"choices":[{"finish_reason":null,"index":0,"logprobs":null,"message":{"content":"","refusal":null,"role":"assistant"}}],"created":<time>,"id":"chatcmpl-<id>","model":"m","object":"chat.completion"}

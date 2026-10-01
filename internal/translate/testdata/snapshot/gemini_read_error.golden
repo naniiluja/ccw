@@ -1,0 +1,9 @@
+data: {"choices":[{"delta":{"content":"","role":"assistant"},"finish_reason":null,"index":0}],"created":<time>,"id":"chatcmpl-r6","model":"","object":"chat.completion.chunk"}
+
+<FLUSH>
+data: {"choices":[{"delta":{"content":"half"},"finish_reason":null,"index":0}],"created":<time>,"id":"chatcmpl-r6","model":"","object":"chat.completion.chunk"}
+
+<FLUSH>
+data: {"error":{"message":"upstream stream ended early: unexpected EOF","type":"api_error"}}
+
+<FLUSH>

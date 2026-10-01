@@ -1,0 +1,1 @@
+{"input":[{"content":[{"text":"hi","type":"input_text"}],"role":"user","type":"message"}],"instructions":"You are a helpful assistant.","model":"gpt","store":false,"stream":true}

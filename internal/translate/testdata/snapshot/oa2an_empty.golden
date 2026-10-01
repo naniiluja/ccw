@@ -1,0 +1,32 @@
+event: message_start
+data: {"message":{"content":[],"id":"msg_<id>","model":"","role":"assistant","stop_reason":null,"stop_sequence":null,"type":"message","usage":{"input_tokens":0,"output_tokens":0}},"type":"message_start"}
+
+<FLUSH>
+event: ping
+data: {"type":"ping"}
+
+<FLUSH>
+event: content_block_start
+data: {"content_block":{"id":"srvtoolu_<id>","input":{},"name":"web_search","type":"server_tool_use"},"index":0,"type":"content_block_start"}
+
+<FLUSH>
+event: content_block_delta
+data: {"delta":{"partial_json":"{\"query\":\"q\"}","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
+
+<FLUSH>
+event: content_block_stop
+data: {"index":0,"type":"content_block_stop"}
+
+<FLUSH>
+event: content_block_start
+data: {"content_block":{"content":{"error_code":"unavailable","type":"web_search_tool_result_error"},"tool_use_id":"srvtoolu_<id>","type":"web_search_tool_result"},"index":1,"type":"content_block_start"}
+
+<FLUSH>
+event: content_block_stop
+data: {"index":1,"type":"content_block_stop"}
+
+<FLUSH>
+event: error
+data: {"error":{"message":"upstream stream ended early","type":"api_error"},"type":"error"}
+
+<FLUSH>

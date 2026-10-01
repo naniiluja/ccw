@@ -1,0 +1,100 @@
+event: message_start
+data: {"message":{"content":[],"id":"msg_a","model":"caller","role":"assistant","stop_reason":null,"stop_sequence":null,"type":"message","usage":{"input_tokens":9,"output_tokens":0}},"type":"message_start"}
+
+<FLUSH>
+event: ping
+data: {"type":"ping"}
+
+<FLUSH>
+event: content_block_start
+data: {"content_block":{"id":"srvtoolu_<id>","input":{},"name":"web_search","type":"server_tool_use"},"index":0,"type":"content_block_start"}
+
+<FLUSH>
+event: content_block_delta
+data: {"delta":{"partial_json":"{\"query\":\"go\"}","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
+
+<FLUSH>
+event: content_block_stop
+data: {"index":0,"type":"content_block_stop"}
+
+<FLUSH>
+event: content_block_start
+data: {"content_block":{"content":[{"encrypted_content":"","page_age":"1 day ago","title":"Go","type":"web_search_result","url":"https://go.dev"}],"tool_use_id":"srvtoolu_<id>","type":"web_search_tool_result"},"index":1,"type":"content_block_start"}
+
+<FLUSH>
+event: content_block_stop
+data: {"index":1,"type":"content_block_stop"}
+
+<FLUSH>
+event: content_block_start
+data: {"content_block":{"signature":"","thinking":"","type":"thinking"},"index":2,"type":"content_block_start"}
+
+<FLUSH>
+event: content_block_delta
+data: {"delta":{"thinking":"plan ","type":"thinking_delta"},"index":2,"type":"content_block_delta"}
+
+<FLUSH>
+event: content_block_delta
+data: {"delta":{"thinking":"inner","type":"thinking_delta"},"index":2,"type":"content_block_delta"}
+
+<FLUSH>
+event: content_block_delta
+data: {"delta":{"signature":"","type":"signature_delta"},"index":2,"type":"content_block_delta"}
+
+<FLUSH>
+event: content_block_stop
+data: {"index":2,"type":"content_block_stop"}
+
+<FLUSH>
+event: content_block_start
+data: {"content_block":{"text":"","type":"text"},"index":3,"type":"content_block_start"}
+
+<FLUSH>
+event: content_block_delta
+data: {"delta":{"text":"Hello ","type":"text_delta"},"index":3,"type":"content_block_delta"}
+
+<FLUSH>
+event: content_block_delta
+data: {"delta":{"text":"world","type":"text_delta"},"index":3,"type":"content_block_delta"}
+
+<FLUSH>
+event: content_block_delta
+data: {"delta":{"text":"no","type":"text_delta"},"index":3,"type":"content_block_delta"}
+
+<FLUSH>
+event: content_block_stop
+data: {"index":3,"type":"content_block_stop"}
+
+<FLUSH>
+event: content_block_start
+data: {"content_block":{"id":"t0","input":{},"name":"f","type":"tool_use"},"index":4,"type":"content_block_start"}
+
+<FLUSH>
+event: content_block_delta
+data: {"delta":{"partial_json":"{\"a\":1}","type":"input_json_delta"},"index":4,"type":"content_block_delta"}
+
+<FLUSH>
+event: content_block_stop
+data: {"index":4,"type":"content_block_stop"}
+
+<FLUSH>
+event: content_block_start
+data: {"content_block":{"id":"t9","input":{},"name":"h","type":"tool_use"},"index":5,"type":"content_block_start"}
+
+<FLUSH>
+event: content_block_delta
+data: {"delta":{"partial_json":"{}","type":"input_json_delta"},"index":5,"type":"content_block_delta"}
+
+<FLUSH>
+event: content_block_stop
+data: {"index":5,"type":"content_block_stop"}
+
+<FLUSH>
+event: message_delta
+data: {"delta":{"stop_reason":"tool_use","stop_sequence":null},"type":"message_delta","usage":{"input_tokens":5,"output_tokens":6,"server_tool_use":{"web_search_requests":1}}}
+
+<FLUSH>
+event: message_stop
+data: {"type":"message_stop"}
+
+<FLUSH>

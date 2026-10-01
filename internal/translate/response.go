@@ -497,209 +497,242 @@ func AnthropicStreamToOpenAI(dst Flusher, src io.Reader) {
 // OpenAIStreamToAnthropic reads Chat Completions chunks and writes the
 // equivalent Messages event stream.
 func OpenAIStreamToAnthropic(dst Flusher, src io.Reader, r Reply) {
-	send := func(event string, v obj) {
-		b, _ := json.Marshal(v)
-		io.WriteString(dst, "event: "+event+"\ndata: "+string(b)+"\n\n")
-		dst.Flush()
-	}
-	fail := func(typ, msg string) {
-		send("error", obj{"type": "error", "error": obj{"type": typ, "message": msg}})
-	}
-	started := false
-	block := -1     // index of the open content block, -1 when none
-	blockKind := "" // "thinking" or "text"
-	// Tool calls are buffered by their OpenAI index and emitted as whole blocks
-	// at the end. Anthropic allows only one open content block at a time, so
-	// streaming a second tool call would close the first and drop the argument
-	// deltas that still arrive for it.
-	type toolAcc struct{ id, name, args string }
-	tools := map[int64]*toolAcc{}
-	var toolOrder []int64
-	var lastTool int64 = -1
-	stop := ""
-	var usage obj
-	var afterStart func() // the search blocks; set once open is defined
-	start := func(id, model string) {
-		if started {
-			return
-		}
-		started = true
-		send("message_start", obj{"type": "message_start", "message": obj{
-			"id": messageID(id), "type": "message", "role": "assistant",
-			"model": r.model(model), "content": []any{}, "stop_reason": nil, "stop_sequence": nil,
-			"usage": obj{"input_tokens": r.InputTokens, "output_tokens": 0}}})
-		send("ping", obj{"type": "ping"})
-		if afterStart != nil {
-			afterStart()
-		}
-	}
-	closeBlock := func() {
-		if block < 0 {
-			return
-		}
-		if blockKind == "thinking" {
-			send("content_block_delta", obj{"type": "content_block_delta", "index": block,
-				"delta": obj{"type": "signature_delta", "signature": ""}})
-		}
-		send("content_block_stop", obj{"type": "content_block_stop", "index": block})
-		block, blockKind = -1, ""
-	}
-	next := 0
-	open := func(kind string, cb obj) {
-		closeBlock()
-		block, blockKind = next, kind
-		next++
-		send("content_block_start", obj{"type": "content_block_start", "index": block, "content_block": cb})
-	}
-	if r.Search != nil {
-		afterStart = func() {
-			call, result := r.Search.blocks()
-			// The hosted tool's call streams its input like any tool use; its
-			// result arrives whole.
-			input, _ := json.Marshal(asObj(call["input"]))
-			call["input"] = obj{}
-			open("search", call)
-			send("content_block_delta", obj{"type": "content_block_delta", "index": block,
-				"delta": obj{"type": "input_json_delta", "partial_json": string(input)}})
-			closeBlock()
-			open("search_result", result)
-			closeBlock()
-		}
-	}
-	delta := func(kind string, cb, d obj) {
-		if blockKind != kind {
-			open(kind, cb)
-		}
-		send("content_block_delta", obj{"type": "content_block_delta", "index": block, "delta": d})
-	}
-	// The reasoning some models write into the content joins the reasoning
-	// field: a client that did not ask for thinking sees neither.
-	var split thinkSplitter
-	emitThink := func(t string) {
-		if r.Thinking {
-			delta("thinking", obj{"type": "thinking", "thinking": "", "signature": ""},
-				obj{"type": "thinking_delta", "thinking": t})
-		}
-	}
-	emitText := func(t string) {
-		delta("text", obj{"type": "text", "text": ""}, obj{"type": "text_delta", "text": t})
-	}
-	// tool finds the accumulator for one tool call fragment. A fragment with
-	// no index belongs to the call before it, unless it names a new id.
-	tool := func(tc obj) *toolAcc {
-		ti := num(tc["index"])
-		if tc["index"] == nil {
-			ti = max(lastTool, 0)
-			if id := str(tc["id"]); id != "" && tools[ti] != nil && tools[ti].id != "" && tools[ti].id != id {
-				ti = int64(len(toolOrder))
-			}
-		}
-		lastTool = ti
-		ta := tools[ti]
-		if ta == nil {
-			ta = &toolAcc{}
-			tools[ti] = ta
-			toolOrder = append(toolOrder, ti)
-		}
-		return ta
-	}
-	finish := func() {
-		start("", "")
-		split.flush(emitThink, emitText)
-		closeBlock()
-		for _, ti := range toolOrder {
-			ta := tools[ti]
-			open("tool", obj{"type": "tool_use", "id": toolID(ta.id), "name": ta.name, "input": obj{}})
-			// The whole-body path reads arguments with parseArgs; a stream that
-			// sent broken JSON gets the same object, not a parse error later.
-			args, _ := json.Marshal(parseArgs(ta.args))
-			send("content_block_delta", obj{"type": "content_block_delta", "index": block,
-				"delta": obj{"type": "input_json_delta", "partial_json": string(args)}})
-		}
-		closeBlock()
-		if stop == "" {
-			stop = "end_turn"
-		}
-		if stop == "tool_use" && len(toolOrder) == 0 {
-			stop = "end_turn"
-		}
-		u := obj{"output_tokens": 0}
-		if usage != nil {
-			u = anthropicUsage(usage)
-		}
-		u = withSearchUsage(u, r.Search)
-		send("message_delta", obj{"type": "message_delta", "delta": obj{"stop_reason": stop, "stop_sequence": nil}, "usage": u})
-		send("message_stop", obj{"type": "message_stop"})
-	}
-	done := false
-	err := sseEvents(src, func(_, data string) bool {
-		if strings.TrimSpace(data) == "[DONE]" {
-			finish()
-			done = true
-			return false
-		}
-		ch, err := decode([]byte(data))
-		if err != nil {
-			return true
-		}
-		if e := asObj(ch["error"]); e != nil {
-			start("", "")
-			fail(AnthropicErrorType(0, str(e["type"])), str(e["message"]))
-			done = true
-			return false
-		}
-		start(str(ch["id"]), str(ch["model"]))
-		if u := asObj(ch["usage"]); u != nil {
-			usage = u
-		}
-		c := asObj(firstOf(ch["choices"]))
-		if c == nil {
-			return true
-		}
-		d := asObj(c["delta"])
-		if t := reasoningOf(d); t != "" && r.Thinking {
-			delta("thinking", obj{"type": "thinking", "thinking": "", "signature": ""},
-				obj{"type": "thinking_delta", "thinking": t})
-		}
-		split.push(str(d["content"]), emitThink, emitText)
-		if t := str(d["refusal"]); t != "" {
-			emitText(t)
-		}
-		calls := list(d["tool_calls"])
-		if fc := asObj(d["function_call"]); fc != nil {
-			calls = append(calls, obj{"index": json.Number("0"), "function": fc})
-		}
-		for _, raw := range calls {
-			tc := asObj(raw)
-			ta := tool(tc)
-			fn := asObj(tc["function"])
-			if id := str(tc["id"]); id != "" {
-				ta.id = id
-			}
-			if n := str(fn["name"]); n != "" {
-				ta.name = n
-			}
-			ta.args += str(fn["arguments"])
-		}
-		if s := openaiStop[str(c["finish_reason"])]; s != "" {
-			stop = s
-		}
-		return true
-	})
-	if done {
+	w := &anthropicStream{dst: dst, r: r, block: -1, tools: map[int64]*toolAcc{}, lastTool: -1}
+	err := sseEvents(src, w.event)
+	if w.done {
 		return
 	}
 	// A stream that ended without [DONE] and without a finish reason was cut:
 	// signal the error instead of a clean stop, so the caller does not treat
 	// truncated text or a half-streamed tool call as a finished answer.
-	if err != nil || stop == "" {
+	if err != nil || w.stop == "" {
 		msg := "upstream stream ended early"
 		if err != nil {
 			msg += ": " + err.Error()
 		}
-		start("", "")
-		fail("api_error", msg)
+		w.start("", "")
+		w.fail("api_error", msg)
 		return
 	}
-	finish()
+	w.finish()
+}
+
+// toolAcc accumulates one streamed tool call.
+type toolAcc struct{ id, name, args string }
+
+// anthropicStream is the state of one OpenAIStreamToAnthropic run: whether
+// message_start went out, the open content block, and the buffered tool calls.
+type anthropicStream struct {
+	dst       Flusher
+	r         Reply
+	started   bool
+	done      bool
+	block     int    // index of the open content block, -1 when none
+	blockKind string // "thinking" or "text"
+	next      int    // index of the next content block
+	// Tool calls are buffered by their OpenAI index and emitted as whole blocks
+	// at the end. Anthropic allows only one open content block at a time, so
+	// streaming a second tool call would close the first and drop the argument
+	// deltas that still arrive for it.
+	tools     map[int64]*toolAcc
+	toolOrder []int64
+	lastTool  int64
+	stop      string
+	usage     obj
+	// The reasoning some models write into the content joins the reasoning
+	// field: a client that did not ask for thinking sees neither.
+	split thinkSplitter
+}
+
+// send writes one Messages event and flushes it.
+func (w *anthropicStream) send(event string, v obj) {
+	b, _ := json.Marshal(v)
+	io.WriteString(w.dst, "event: "+event+"\ndata: "+string(b)+"\n\n")
+	w.dst.Flush()
+}
+
+// fail writes an error event.
+func (w *anthropicStream) fail(typ, msg string) {
+	w.send("error", obj{"type": "error", "error": obj{"type": typ, "message": msg}})
+}
+
+// start writes message_start and ping once, then the search blocks if any.
+func (w *anthropicStream) start(id, model string) {
+	if w.started {
+		return
+	}
+	w.started = true
+	w.send("message_start", obj{"type": "message_start", "message": obj{
+		"id": messageID(id), "type": "message", "role": "assistant",
+		"model": w.r.model(model), "content": []any{}, "stop_reason": nil, "stop_sequence": nil,
+		"usage": obj{"input_tokens": w.r.InputTokens, "output_tokens": 0}}})
+	w.send("ping", obj{"type": "ping"})
+	if w.r.Search != nil {
+		w.searchBlocks()
+	}
+}
+
+// searchBlocks writes the search ccw ran as the first blocks of the answer.
+func (w *anthropicStream) searchBlocks() {
+	call, result := w.r.Search.blocks()
+	// The hosted tool's call streams its input like any tool use; its
+	// result arrives whole.
+	input, _ := json.Marshal(asObj(call["input"]))
+	call["input"] = obj{}
+	w.open("search", call)
+	w.send("content_block_delta", obj{"type": "content_block_delta", "index": w.block,
+		"delta": obj{"type": "input_json_delta", "partial_json": string(input)}})
+	w.closeBlock()
+	w.open("search_result", result)
+	w.closeBlock()
+}
+
+// closeBlock ends the open content block, if there is one.
+func (w *anthropicStream) closeBlock() {
+	if w.block < 0 {
+		return
+	}
+	if w.blockKind == "thinking" {
+		w.send("content_block_delta", obj{"type": "content_block_delta", "index": w.block,
+			"delta": obj{"type": "signature_delta", "signature": ""}})
+	}
+	w.send("content_block_stop", obj{"type": "content_block_stop", "index": w.block})
+	w.block, w.blockKind = -1, ""
+}
+
+// open closes the open block and starts the next one.
+func (w *anthropicStream) open(kind string, cb obj) {
+	w.closeBlock()
+	w.block, w.blockKind = w.next, kind
+	w.next++
+	w.send("content_block_start", obj{"type": "content_block_start", "index": w.block, "content_block": cb})
+}
+
+// delta writes d into a block of the given kind, opening one when the open
+// block is of another kind.
+func (w *anthropicStream) delta(kind string, cb, d obj) {
+	if w.blockKind != kind {
+		w.open(kind, cb)
+	}
+	w.send("content_block_delta", obj{"type": "content_block_delta", "index": w.block, "delta": d})
+}
+
+// emitThink writes reasoning as a thinking delta when the caller asked for it.
+func (w *anthropicStream) emitThink(t string) {
+	if w.r.Thinking {
+		w.delta("thinking", obj{"type": "thinking", "thinking": "", "signature": ""},
+			obj{"type": "thinking_delta", "thinking": t})
+	}
+}
+
+// emitText writes a text delta.
+func (w *anthropicStream) emitText(t string) {
+	w.delta("text", obj{"type": "text", "text": ""}, obj{"type": "text_delta", "text": t})
+}
+
+// tool finds the accumulator for one tool call fragment. A fragment with
+// no index belongs to the call before it, unless it names a new id.
+func (w *anthropicStream) tool(tc obj) *toolAcc {
+	ti := num(tc["index"])
+	if tc["index"] == nil {
+		ti = max(w.lastTool, 0)
+		if id := str(tc["id"]); id != "" && w.tools[ti] != nil && w.tools[ti].id != "" && w.tools[ti].id != id {
+			ti = int64(len(w.toolOrder))
+		}
+	}
+	w.lastTool = ti
+	ta := w.tools[ti]
+	if ta == nil {
+		ta = &toolAcc{}
+		w.tools[ti] = ta
+		w.toolOrder = append(w.toolOrder, ti)
+	}
+	return ta
+}
+
+// finish writes the buffered tool calls, message_delta and message_stop.
+func (w *anthropicStream) finish() {
+	w.start("", "")
+	w.split.flush(w.emitThink, w.emitText)
+	w.closeBlock()
+	for _, ti := range w.toolOrder {
+		ta := w.tools[ti]
+		w.open("tool", obj{"type": "tool_use", "id": toolID(ta.id), "name": ta.name, "input": obj{}})
+		// The whole-body path reads arguments with parseArgs; a stream that
+		// sent broken JSON gets the same object, not a parse error later.
+		args, _ := json.Marshal(parseArgs(ta.args))
+		w.send("content_block_delta", obj{"type": "content_block_delta", "index": w.block,
+			"delta": obj{"type": "input_json_delta", "partial_json": string(args)}})
+	}
+	w.closeBlock()
+	if w.stop == "" || (w.stop == "tool_use" && len(w.toolOrder) == 0) {
+		w.stop = "end_turn"
+	}
+	u := obj{"output_tokens": 0}
+	if w.usage != nil {
+		u = anthropicUsage(w.usage)
+	}
+	u = withSearchUsage(u, w.r.Search)
+	w.send("message_delta", obj{"type": "message_delta", "delta": obj{"stop_reason": w.stop, "stop_sequence": nil}, "usage": u})
+	w.send("message_stop", obj{"type": "message_stop"})
+}
+
+// event handles one SSE data payload. It returns false once the stream is
+// over: at [DONE] or at an upstream error.
+func (w *anthropicStream) event(_, data string) bool {
+	if strings.TrimSpace(data) == "[DONE]" {
+		w.finish()
+		w.done = true
+		return false
+	}
+	ch, err := decode([]byte(data))
+	if err != nil {
+		return true
+	}
+	if e := asObj(ch["error"]); e != nil {
+		w.start("", "")
+		w.fail(AnthropicErrorType(0, str(e["type"])), str(e["message"]))
+		w.done = true
+		return false
+	}
+	w.start(str(ch["id"]), str(ch["model"]))
+	if u := asObj(ch["usage"]); u != nil {
+		w.usage = u
+	}
+	if c := asObj(firstOf(ch["choices"])); c != nil {
+		w.choice(c)
+	}
+	return true
+}
+
+// choice writes the delta of the first choice of a chunk.
+func (w *anthropicStream) choice(c obj) {
+	d := asObj(c["delta"])
+	if t := reasoningOf(d); t != "" && w.r.Thinking {
+		w.delta("thinking", obj{"type": "thinking", "thinking": "", "signature": ""},
+			obj{"type": "thinking_delta", "thinking": t})
+	}
+	w.split.push(str(d["content"]), w.emitThink, w.emitText)
+	if t := str(d["refusal"]); t != "" {
+		w.emitText(t)
+	}
+	calls := list(d["tool_calls"])
+	if fc := asObj(d["function_call"]); fc != nil {
+		calls = append(calls, obj{"index": json.Number("0"), "function": fc})
+	}
+	for _, raw := range calls {
+		tc := asObj(raw)
+		ta := w.tool(tc)
+		fn := asObj(tc["function"])
+		if id := str(tc["id"]); id != "" {
+			ta.id = id
+		}
+		if n := str(fn["name"]); n != "" {
+			ta.name = n
+		}
+		ta.args += str(fn["arguments"])
+	}
+	if s := openaiStop[str(c["finish_reason"])]; s != "" {
+		w.stop = s
+	}
 }

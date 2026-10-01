@@ -1,0 +1,1 @@
+{"choices":[{"finish_reason":null,"index":0,"logprobs":null,"message":{"content":"hi","refusal":null,"role":"assistant","tool_calls":[{"function":{"arguments":"{}","name":"f"},"id":"t","type":"function"}]}}],"created":<time>,"id":"chatcmpl-<id>","model":"","object":"chat.completion"}
