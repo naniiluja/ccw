@@ -22,6 +22,7 @@ Xóa kênh cảnh báo cho người vận hành (Telegram, webhook) cùng mọi 
 - Test hiện có của `errreview_test.go`, `driftreview_test.go`, `oauth_refresh_test.go` giữ nguyên ý nghĩa sau khi bỏ phần cảnh báo.
 
 ## Files to touch
+- internal/httpapi/driftreview_test.go — bỏ dùng `alertsServer` đã xóa (compiler buộc)
 - internal/httpapi/notify.go, internal/httpapi/notify_test.go, internal/httpapi/notify_ssrf_test.go — xóa
 - internal/store/notify.go — xóa
 - internal/store/store.go — bỏ `notifySchema`
