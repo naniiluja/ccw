@@ -44,8 +44,6 @@ type api struct {
 	quota quotaCache
 	// auto tracks the providers whose models are being auto-tested.
 	auto autoState
-	// arena holds the model leaderboard and its name index.
-	arena arenaState
 	// review is the drift review.
 	review reviewState
 	// errReview is the error review's state.
@@ -92,8 +90,6 @@ func newServer(s *store.Store, baseOverride map[string]string, authCfg *auth.Con
 	go a.autoTestLoop()
 	a.loadDefs()
 	a.migrateCustomEndpoints()
-	a.loadArena()
-	go a.arenaLoop()
 	go a.reviewLoop()
 	go a.errorReviewLoop()
 	mux := http.NewServeMux()
@@ -183,12 +179,6 @@ func newServer(s *store.Store, baseOverride map[string]string, authCfg *auth.Con
 	mux.HandleFunc("GET /provider-defs/{id}", a.requireSession(a.getDef))
 	mux.HandleFunc("POST /provider-defs", a.requireSession(a.putDef))
 	mux.HandleFunc("POST /provider-defs/{id}/delete", a.requireSession(a.deleteDef))
-	mux.HandleFunc("GET /api/rankings", a.requireToken(a.rankings))
-	mux.HandleFunc("POST /api/rankings/refresh", a.requireAdmin(a.refreshRankings))
-	mux.HandleFunc("POST /api/rankings/alias", a.requireAdmin(a.setArenaAlias))
-	mux.HandleFunc("GET /rankings", a.requireSession(a.rankings))
-	mux.HandleFunc("POST /rankings/refresh", a.requireSession(a.refreshRankings))
-	mux.HandleFunc("POST /rankings/alias", a.requireSession(a.setArenaAlias))
 	mux.HandleFunc("POST /api/providers/{id}/models/active", a.requireAdmin(a.setModelsActive))
 	mux.HandleFunc("POST /api/providers/{id}/models/delete", a.requireAdmin(a.deleteModels))
 	mux.HandleFunc("POST /api/providers/{id}/models/test", a.requireAdmin(a.testModel))
