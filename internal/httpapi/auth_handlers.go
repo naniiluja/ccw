@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/naniiluja/ccw/internal/auth"
 )
 
 // loginBodyMax caps the sign-in body. The form carries one password field, and
@@ -28,8 +30,8 @@ func (a *api) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	// The attempt is charged before the password is checked, so a flood cannot
 	// get more password checks than the lane allows.
-	src := loginSourceOf(r, a.auth.DeviceID, a.login.ownerLoopback)
-	if ok, wait := a.login.reserve(src, time.Now()); !ok {
+	src := auth.LoginSourceOf(r, a.auth.DeviceID, a.login.OwnerLoopback())
+	if ok, wait := a.login.Reserve(src, time.Now()); !ok {
 		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
 		writeError(w, http.StatusTooManyRequests, "Too many attempts. Wait a few minutes.")
 		return
@@ -38,7 +40,7 @@ func (a *api) loginSubmit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "Wrong password. Try again.")
 		return
 	}
-	a.login.refund(src)
+	a.login.Refund(src)
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
 		Value:    a.auth.IssueSession(),
@@ -58,7 +60,7 @@ func (a *api) loginSubmit(w http.ResponseWriter, r *http.Request) {
 // browser keeps the device it already has, so its budget is not reset.
 func (a *api) setDeviceCookie(w http.ResponseWriter, r *http.Request) {
 	value := ""
-	if ck, err := r.Cookie(deviceCookie); err == nil {
+	if ck, err := r.Cookie(auth.DeviceCookie); err == nil {
 		if _, ok := a.auth.DeviceID(ck.Value); ok {
 			value = ck.Value
 		}
@@ -67,7 +69,7 @@ func (a *api) setDeviceCookie(w http.ResponseWriter, r *http.Request) {
 		value = a.auth.IssueDevice()
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name:     deviceCookie,
+		Name:     auth.DeviceCookie,
 		Value:    value,
 		Path:     "/",
 		HttpOnly: true,

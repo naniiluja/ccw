@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"fmt"
-	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -10,7 +9,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/naniiluja/ccw/internal/auth"
 )
@@ -18,7 +16,6 @@ import (
 const (
 	addrLoopback = "127.0.0.1:54321"
 	addrTunnel   = "127.0.0.1:54322" // cloudflared connects from this machine
-	addrPublic   = "203.0.113.9:443"
 	// wrongPassword is long enough to be a valid password, and is not testPassword.
 	wrongPassword = "wrong-password-1"
 )
@@ -56,74 +53,17 @@ func cookieNamed(rec *httptest.ResponseRecorder, name string) *http.Cookie {
 	return nil
 }
 
-// guardCounts reads the three budgets. The caller must not hold the lock.
-func guardCounts(g *loginGuard) (public, addresses, devices int) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return len(g.public), len(g.perIP), len(g.device)
-}
-
 // fillPublicBudget sends wrong passwords from a new address each time, so only the
 // public budget can stop them. It returns the handler's last status.
 func fillPublicBudget(t *testing.T, h http.Handler) {
 	t.Helper()
-	for i := 0; i < loginPublicMax; i++ {
+	for i := 0; i < auth.LoginPublicMax; i++ {
 		rec := send(h, loginPost(wrongPassword, addrTunnel, map[string]string{
 			"CF-Connecting-IP": fmt.Sprintf("198.51.100.%d", i%256),
 		}))
 		if rec.Code != http.StatusUnauthorized {
 			t.Fatalf("fill attempt %d: code=%d, want 401", i, rec.Code)
 		}
-	}
-}
-
-// T1-1 (1) and T7-5 (b): the public budget bounds how many passwords a caller that
-// rotates its address can have evaluated. The numbers come from the constants.
-func TestLoginBruteForceBoundIsBelowOnePercent(t *testing.T) {
-	const span = 30 * 24 * time.Hour
-	windows := int(span / loginPublicWin)
-	maxChecks := windows * loginPublicMax
-	// The weakest accepted password is the minimum length drawn from the 26
-	// lowercase letters, so one guess matches with 1 of 26^MinPasswordLength.
-	perGuess := math.Pow(26, -float64(auth.MinPasswordLength))
-	if maxChecks > 3000 {
-		t.Errorf("%d evaluated passwords in 30 days, want at most 3000", maxChecks)
-	}
-	if p := float64(maxChecks) * perGuess; p >= 0.01 {
-		t.Errorf("%d passwords in 30 days gives p=%.4g, want below 0.01", maxChecks, p)
-	}
-}
-
-// T1-1 (2) and T7-5: the charge and the test happen under one lock, so a burst
-// cannot go past the cap.
-func TestLoginGuardReserveIsAtomicUnderLoad(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		ipOf func(i int) string
-		want int
-	}{
-		{"rotating addresses stop at the public cap", func(i int) string { return fmt.Sprintf("198.51.100.%d", i) }, loginPublicMax},
-		{"one address stops at its own cap", func(int) string { return "198.51.100.7" }, loginPerIPMax},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			g := newLoginGuard()
-			now := time.Now()
-			var admitted atomic.Int64
-			var wg sync.WaitGroup
-			for i := 0; i < 200; i++ {
-				wg.Add(1)
-				go func(i int) {
-					defer wg.Done()
-					if ok, _ := g.reserve(loginSource{lane: lanePublic, ip: tc.ipOf(i)}, now); ok {
-						admitted.Add(1)
-					}
-				}(i)
-			}
-			wg.Wait()
-			if got := int(admitted.Load()); got != tc.want {
-				t.Fatalf("admitted %d of 200 attempts, want %d", got, tc.want)
-			}
-		})
 	}
 }
 
@@ -136,8 +76,8 @@ func TestLoginHandlerEvaluatesNoMoreCodesThanTheCap(t *testing.T) {
 		cfOf func(i int) string
 		cap  int
 	}{
-		{"rotating addresses", func(i int) string { return fmt.Sprintf("198.51.100.%d", i) }, loginPublicMax},
-		{"one address", func(int) string { return "198.51.100.7" }, loginPerIPMax},
+		{"rotating addresses", func(i int) string { return fmt.Sprintf("198.51.100.%d", i) }, auth.LoginPublicMax},
+		{"one address", func(int) string { return "198.51.100.7" }, auth.LoginPerIPMax},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := openStore(t)
@@ -178,7 +118,7 @@ func TestLoginAcceptsACorrectPasswordAfterFourWrongOnes(t *testing.T) {
 	cfg := authConfig()
 	h := NewWithAuth(s, nil, cfg)
 	head := map[string]string{"CF-Connecting-IP": "198.51.100.30"}
-	for i := 0; i < loginPerIPMax-1; i++ {
+	for i := 0; i < auth.LoginPerIPMax-1; i++ {
 		if rec := send(h, loginPost(wrongPassword, addrTunnel, head)); rec.Code != http.StatusUnauthorized {
 			t.Fatalf("wrong password %d: code=%d, want 401", i, rec.Code)
 		}
@@ -186,7 +126,7 @@ func TestLoginAcceptsACorrectPasswordAfterFourWrongOnes(t *testing.T) {
 	rec := send(h, loginPost(testPassword, addrTunnel, head))
 	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/" {
 		t.Fatalf("correct password after %d wrong ones: code=%d loc=%q, want 302 -> /",
-			loginPerIPMax-1, rec.Code, rec.Header().Get("Location"))
+			auth.LoginPerIPMax-1, rec.Code, rec.Header().Get("Location"))
 	}
 	if cookieNamed(rec, sessionCookie) == nil {
 		t.Fatal("the correct password set no session cookie")
@@ -203,7 +143,7 @@ func TestSuccessfulLoginLeavesNoEntryInAnyBudget(t *testing.T) {
 	if rec.Code != http.StatusFound {
 		t.Fatalf("login code=%d, want 302", rec.Code)
 	}
-	public, addresses, devices := guardCounts(a.login)
+	public, addresses, devices := a.login.Counts()
 	if public != 0 || addresses != 0 || devices != 0 {
 		t.Fatalf("after a correct password: public=%d addresses=%d devices=%d, want 0 0 0", public, addresses, devices)
 	}
@@ -251,12 +191,12 @@ func TestDeviceCookieSignsInWhileThePublicBudgetIsFull(t *testing.T) {
 	password := testPassword
 	head := map[string]string{"CF-Connecting-IP": "198.51.100.210"}
 
-	forged := &http.Cookie{Name: deviceCookie, Value: "0123456789abcdef.not-a-real-signature"}
+	forged := &http.Cookie{Name: auth.DeviceCookie, Value: "0123456789abcdef.not-a-real-signature"}
 	if rec := send(h, loginPost(password, addrTunnel, head, forged)); rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("forged device cookie: code=%d, want 429 (the public lane)", rec.Code)
 	}
 
-	known := &http.Cookie{Name: deviceCookie, Value: cfg.IssueDevice()}
+	known := &http.Cookie{Name: auth.DeviceCookie, Value: cfg.IssueDevice()}
 	rec := send(h, loginPost(password, addrTunnel, head, known))
 	if rec.Code != http.StatusFound {
 		t.Fatalf("known device with a full public budget: code=%d, want 302", rec.Code)
@@ -274,7 +214,7 @@ func TestSuccessfulLoginSetsADeviceCookie(t *testing.T) {
 	if rec.Code != http.StatusFound {
 		t.Fatalf("login code=%d, want 302", rec.Code)
 	}
-	ck := cookieNamed(rec, deviceCookie)
+	ck := cookieNamed(rec, auth.DeviceCookie)
 	if ck == nil {
 		t.Fatal("login set no device cookie")
 	}
@@ -298,12 +238,12 @@ func TestLoginKeepsAKnownDeviceCookie(t *testing.T) {
 	s := openStore(t)
 	cfg := authConfig()
 	h := NewWithAuth(s, nil, cfg)
-	known := &http.Cookie{Name: deviceCookie, Value: cfg.IssueDevice()}
+	known := &http.Cookie{Name: auth.DeviceCookie, Value: cfg.IssueDevice()}
 	rec := send(h, loginPost(testPassword, addrLoopback, nil, known))
 	if rec.Code != http.StatusFound {
 		t.Fatalf("login code=%d, want 302", rec.Code)
 	}
-	if ck := cookieNamed(rec, deviceCookie); ck == nil || ck.Value != known.Value {
+	if ck := cookieNamed(rec, auth.DeviceCookie); ck == nil || ck.Value != known.Value {
 		t.Fatalf("device cookie changed on sign-in: %v", ck)
 	}
 }
@@ -313,166 +253,22 @@ func TestDeviceLaneHasItsOwnBudget(t *testing.T) {
 	s := openStore(t)
 	cfg := authConfig()
 	a, h := newServer(s, nil, cfg)
-	known := &http.Cookie{Name: deviceCookie, Value: cfg.IssueDevice()}
+	known := &http.Cookie{Name: auth.DeviceCookie, Value: cfg.IssueDevice()}
 	head := map[string]string{"CF-Connecting-IP": "198.51.100.220"}
-	for i := 0; i < loginDeviceMax; i++ {
+	for i := 0; i < auth.LoginDeviceMax; i++ {
 		if rec := send(h, loginPost(wrongPassword, addrTunnel, head, known)); rec.Code != http.StatusUnauthorized {
 			t.Fatalf("device attempt %d: code=%d, want 401", i, rec.Code)
 		}
 	}
 	if rec := send(h, loginPost(wrongPassword, addrTunnel, head, known)); rec.Code != http.StatusTooManyRequests {
-		t.Fatalf("attempt %d from one device: code=%d, want 429", loginDeviceMax+1, rec.Code)
+		t.Fatalf("attempt %d from one device: code=%d, want 429", auth.LoginDeviceMax+1, rec.Code)
 	}
-	public, addresses, devices := guardCounts(a.login)
+	public, addresses, devices := a.login.Counts()
 	if public != 0 || addresses != 0 {
 		t.Errorf("device failures reached another budget: public=%d addresses=%d, want 0 0", public, addresses)
 	}
 	if devices != 1 {
 		t.Errorf("device budgets=%d, want 1", devices)
-	}
-}
-
-// The owner path is never charged, so nothing an attacker does can fill it.
-func TestLocalLaneIsNeverCharged(t *testing.T) {
-	g := newLoginGuard()
-	now := time.Now()
-	for i := 0; i < 1000; i++ {
-		if ok, _ := g.reserve(loginSource{lane: laneLocal}, now); !ok {
-			t.Fatalf("the local lane refused attempt %d", i)
-		}
-	}
-	if public, addresses, devices := guardCounts(g); public != 0 || addresses != 0 || devices != 0 {
-		t.Fatalf("local attempts were charged: public=%d addresses=%d devices=%d", public, addresses, devices)
-	}
-}
-
-func TestLoginGuardBlocksOneAddressAndClearsItsWindow(t *testing.T) {
-	g := newLoginGuard()
-	now := time.Now()
-	src := loginSource{lane: lanePublic, ip: "198.51.100.40"}
-	for i := 0; i < loginPerIPMax; i++ {
-		if ok, _ := g.reserve(src, now); !ok {
-			t.Fatalf("attempt %d refused too early", i)
-		}
-	}
-	ok, wait := g.reserve(src, now)
-	if ok || wait <= 0 {
-		t.Fatalf("address not blocked after %d failures: ok=%v wait=%v", loginPerIPMax, ok, wait)
-	}
-	// Another address still has its own budget.
-	if ok, _ := g.reserve(loginSource{lane: lanePublic, ip: "198.51.100.41"}, now); !ok {
-		t.Fatal("a second address was blocked by the first's failures")
-	}
-	// The window clears with time.
-	if ok, _ := g.reserve(src, now.Add(loginPerIPWin+time.Second)); !ok {
-		t.Fatal("the per-address window did not clear")
-	}
-}
-
-func TestPublicWindowClearsAfterItsSpan(t *testing.T) {
-	g := newLoginGuard()
-	now := time.Now()
-	for i := 0; i < loginPublicMax; i++ {
-		g.reserve(loginSource{lane: lanePublic, ip: fmt.Sprintf("198.51.100.%d", i)}, now)
-	}
-	fresh := loginSource{lane: lanePublic, ip: "203.0.113.5"}
-	if ok, _ := g.reserve(fresh, now); ok {
-		t.Fatal("the public budget admitted an attempt past its cap")
-	}
-	if ok, _ := g.reserve(fresh, now.Add(loginPublicWin+time.Second)); !ok {
-		t.Fatal("the public window did not clear after its span")
-	}
-}
-
-// The refund gives back one charge, never the whole budget: a stranger's
-// failures stay counted after the owner signs in.
-func TestRefundReturnsOnlyItsOwnCharge(t *testing.T) {
-	g := newLoginGuard()
-	now := time.Now()
-	for i := 0; i < 3; i++ {
-		g.reserve(loginSource{lane: lanePublic, ip: fmt.Sprintf("198.51.100.%d", i)}, now)
-	}
-	mine := loginSource{lane: lanePublic, ip: "203.0.113.6"}
-	if ok, _ := g.reserve(mine, now); !ok {
-		t.Fatal("reserve refused a free budget")
-	}
-	g.refund(mine)
-	if public, addresses, _ := guardCounts(g); public != 3 || addresses != 3 {
-		t.Fatalf("after a refund: public=%d addresses=%d, want 3 3", public, addresses)
-	}
-}
-
-func TestLoginSourceOfPicksOneLane(t *testing.T) {
-	cfg := authConfig()
-	device := cfg.IssueDevice()
-	id, _ := cfg.DeviceID(device)
-
-	for _, tc := range []struct {
-		name       string
-		remoteAddr string
-		header     map[string]string
-		cookie     string
-		want       loginSource
-	}{
-		{"loopback with no header is the owner path", addrLoopback, nil, "", loginSource{lane: laneLocal}},
-		{"ipv6 loopback is the owner path", "[::1]:41000", nil, "", loginSource{lane: laneLocal}},
-		{"a tunnel request is public", addrTunnel, map[string]string{"CF-Connecting-IP": "9.9.9.9"}, "",
-			loginSource{lane: lanePublic, ip: "9.9.9.9"}},
-		{"a forwarded header alone takes the owner path away", addrTunnel,
-			map[string]string{"X-Forwarded-For": "9.9.9.8"}, "", loginSource{lane: lanePublic, ip: "9.9.9.8"}},
-		{"a direct remote caller is public", addrPublic, nil, "", loginSource{lane: lanePublic, ip: "203.0.113.9"}},
-		{"a known device gets its own lane", addrTunnel, map[string]string{"CF-Connecting-IP": "9.9.9.9"}, device,
-			loginSource{lane: laneDevice, device: id}},
-		{"a forged device cookie is public", addrTunnel, map[string]string{"CF-Connecting-IP": "9.9.9.9"}, "abc.def",
-			loginSource{lane: lanePublic, ip: "9.9.9.9"}},
-		{"a device cookie does not move the owner path", addrLoopback, nil, device, loginSource{lane: laneLocal}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			r := httptest.NewRequest("POST", "/login", nil)
-			r.RemoteAddr = tc.remoteAddr
-			for k, v := range tc.header {
-				r.Header.Set(k, v)
-			}
-			if tc.cookie != "" {
-				r.AddCookie(&http.Cookie{Name: deviceCookie, Value: tc.cookie})
-			}
-			if got := loginSourceOf(r, cfg.DeviceID, true); got != tc.want {
-				t.Errorf("loginSourceOf = %+v, want %+v", got, tc.want)
-			}
-		})
-	}
-}
-
-// T8-4: which address a public attempt is charged to. A forwarding header is
-// read only from a loopback connection, because only the tunnel writes it.
-func TestClientIPPrefersCFThenXFFFromLoopbackOnly(t *testing.T) {
-	for _, tc := range []struct {
-		name       string
-		remoteAddr string
-		cf, xff    string
-		want       string
-	}{
-		{"CF wins over XFF", addrLoopback, "1.1.1.1", "2.2.2.2", "1.1.1.1"},
-		{"the first XFF entry, trimmed", addrLoopback, "", " 2.2.2.2 , 3.3.3.3", "2.2.2.2"},
-		{"one XFF entry", addrLoopback, "", "4.4.4.4", "4.4.4.4"},
-		{"no header is the connection", "5.5.5.5:1234", "", "", "5.5.5.5"},
-		{"ipv6 loopback", "[::1]:80", "", "", "::1"},
-		{"a remote caller cannot name itself with CF", "5.5.5.5:1234", "1.1.1.1", "", "5.5.5.5"},
-		{"a remote caller cannot name itself with XFF", "5.5.5.5:1234", "", "2.2.2.2", "5.5.5.5"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			r := httptest.NewRequest("POST", "/login", nil)
-			r.RemoteAddr = tc.remoteAddr
-			if tc.cf != "" {
-				r.Header.Set("CF-Connecting-IP", tc.cf)
-			}
-			if tc.xff != "" {
-				r.Header.Set("X-Forwarded-For", tc.xff)
-			}
-			if got := clientIP(r); got != tc.want {
-				t.Errorf("clientIP = %q, want %q", got, tc.want)
-			}
-		})
 	}
 }
 
@@ -494,21 +290,17 @@ func TestLoginBodyIsCapped(t *testing.T) {
 
 // C2 (round 2): without the opt-in, a loopback caller with no forwarding header
 // is public. A proxy that adds no header makes every internet caller look local.
+// The lane decision itself is tested in internal/auth.
 func TestLoopbackWithoutHeaderIsPublicByDefault(t *testing.T) {
 	t.Setenv("CCW_OWNER_LOOPBACK", "")
 	h := NewWithAuth(openStore(t), nil, authConfig())
-	for i := 1; i <= loginPerIPMax; i++ {
+	for i := 1; i <= auth.LoginPerIPMax; i++ {
 		if rec := send(h, loginPost(wrongPassword, addrLoopback, nil)); rec.Code != http.StatusUnauthorized {
 			t.Fatalf("wrong password %d: status %d, want 401", i, rec.Code)
 		}
 	}
 	if rec := send(h, loginPost(wrongPassword, addrLoopback, nil)); rec.Code != http.StatusTooManyRequests {
-		t.Fatalf("wrong password %d: status %d, want 429", loginPerIPMax+1, rec.Code)
-	}
-	r := httptest.NewRequest("POST", "/login", nil)
-	r.RemoteAddr = addrLoopback
-	if got := loginSourceOf(r, nil, false); got.lane != lanePublic {
-		t.Fatalf("lane = %v, want lanePublic", got.lane)
+		t.Fatalf("wrong password %d: status %d, want 429", auth.LoginPerIPMax+1, rec.Code)
 	}
 }
 
@@ -516,7 +308,7 @@ func TestLoopbackWithoutHeaderIsPublicByDefault(t *testing.T) {
 func TestOwnerLoopbackOptInRestoresLocalLane(t *testing.T) {
 	t.Setenv("CCW_OWNER_LOOPBACK", "1")
 	h := NewWithAuth(openStore(t), nil, authConfig())
-	for i := 1; i <= 3*loginPerIPMax; i++ {
+	for i := 1; i <= 3*auth.LoginPerIPMax; i++ {
 		if rec := send(h, loginPost(wrongPassword, addrLoopback, nil)); rec.Code != http.StatusUnauthorized {
 			t.Fatalf("wrong password %d: status %d, want 401", i, rec.Code)
 		}
