@@ -112,7 +112,7 @@ func workflowJob(workflow, name string) string {
 	return strings.Join(job, "\n")
 }
 
-// TestReleaseWorkflowGatesPublishOnTests keeps a red go vet or go test from
+// TestReleaseWorkflowGatesPublishOnTests keeps a red gate of scripts/check.sh from
 // shipping: the publish job must wait for the test job, the test job must also
 // run on pushes to master and pull requests, and publish must stay tag-only.
 func TestReleaseWorkflowGatesPublishOnTests(t *testing.T) {
@@ -126,9 +126,15 @@ func TestReleaseWorkflowGatesPublishOnTests(t *testing.T) {
 	if test == "" {
 		t.Fatal("workflow has no test job")
 	}
-	for _, want := range []string{"go-version-file: go.mod", "go vet ./...", "go test -race ./..."} {
+	for _, want := range []string{"go-version-file: go.mod", "scripts/check.sh"} {
 		if !strings.Contains(test, want) {
 			t.Errorf("test job misses %q", want)
+		}
+	}
+	check := repoFile(t, "scripts/check.sh")
+	for _, want := range []string{"gofmt -l", "go vet ./...", "staticcheck@", "gocyclo@", "go test -race ./..."} {
+		if !strings.Contains(check, want) {
+			t.Errorf("scripts/check.sh misses the %q gate", want)
 		}
 	}
 	publish := workflowJob(w, "publish")

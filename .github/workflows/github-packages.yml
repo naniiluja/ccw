@@ -1,7 +1,8 @@
 # Publishes the npm packages to GitHub Packages as @<owner>/ccw-gateway, so the
 # repository page lists them. npmjs.com gets the same packages without a scope.
-# go vet and go test -race run on every push to master and every pull request,
-# and a v* tag publishes only after they pass.
+# scripts/check.sh (gofmt, go vet, staticcheck, gocyclo, go test -race with the
+# architecture and size tests) runs on every push to master and every pull
+# request, and a v* tag publishes only after it passes.
 name: GitHub Packages
 on:
   workflow_dispatch:
@@ -19,10 +20,8 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - name: Vet
-        run: go vet ./...
-      - name: Test
-        run: go test -race ./...
+      - name: Check (same gates as local scripts/check.sh)
+        run: bash scripts/check.sh
   publish:
     needs: test
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
