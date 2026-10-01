@@ -106,7 +106,7 @@ func (a *api) createAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "cannot create connection")
 		return
 	}
-	http.Redirect(w, r, "/", http.StatusFound)
+	redirectOrOK(w, r, "/")
 }
 
 // deleteAccount removes one connection, then returns to the dashboard.
@@ -115,7 +115,7 @@ func (a *api) deleteAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "unknown connection")
 		return
 	}
-	http.Redirect(w, r, "/", http.StatusFound)
+	redirectOrOK(w, r, "/")
 }
 
 // usage serves the daily token counters, newest day first.

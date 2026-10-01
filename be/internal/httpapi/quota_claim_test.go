@@ -53,19 +53,19 @@ func TestClaimAuthRequirements(t *testing.T) {
 
 	// Request without session
 	recNoSess := postJSON(authHandler, "/quota/"+c.ID+"/reset", `{"resetId":"weekly","requestId":"req-1"}`, nil, "")
-	if recNoSess.Code != http.StatusFound || recNoSess.Header().Get("Location") != "/login" {
+	if recNoSess.Code != http.StatusFound || recNoSess.Header().Get("Location") != "/ui/login" {
 		t.Errorf("no session claim code = %d (loc %s), want 302 /login", recNoSess.Code, recNoSess.Header().Get("Location"))
 	}
 
 	// Request with master token
 	recMaster := postJSON(authHandler, "/quota/"+c.ID+"/reset", `{"resetId":"weekly","requestId":"req-1"}`, nil, cfg.APIToken)
-	if recMaster.Code != http.StatusFound || recMaster.Header().Get("Location") != "/login" {
+	if recMaster.Code != http.StatusFound || recMaster.Header().Get("Location") != "/ui/login" {
 		t.Errorf("master token claim code = %d (loc %s), want 302 /login", recMaster.Code, recMaster.Header().Get("Location"))
 	}
 
 	// Request with dashboard key
 	recKey := postJSON(authHandler, "/quota/"+c.ID+"/reset", `{"resetId":"weekly","requestId":"req-1"}`, nil, dashKey.Key)
-	if recKey.Code != http.StatusFound || recKey.Header().Get("Location") != "/login" {
+	if recKey.Code != http.StatusFound || recKey.Header().Get("Location") != "/ui/login" {
 		t.Errorf("key claim code = %d (loc %s), want 302 /login", recKey.Code, recKey.Header().Get("Location"))
 	}
 

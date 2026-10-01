@@ -24,7 +24,7 @@ const deviceMaxAge = 400 * 24 * 3600
 
 func (a *api) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	if a.auth == nil {
-		http.Redirect(w, r, "/", http.StatusFound)
+		redirectOrOK(w, r, "/")
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, loginBodyMax)
@@ -55,7 +55,7 @@ func (a *api) loginSubmit(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   a.auth.TTLSeconds(),
 	})
 	a.setDeviceCookie(w, r)
-	http.Redirect(w, r, "/", http.StatusFound)
+	redirectOrOK(w, r, "/")
 }
 
 // setDeviceCookie marks this browser as one that has signed in. The cookie
@@ -95,7 +95,7 @@ func (a *api) logout(w http.ResponseWriter, r *http.Request) {
 		Name: sessionCookie, Value: "", Path: "/", HttpOnly: true,
 		Secure: true, SameSite: http.SameSiteLaxMode, Expires: time.Unix(0, 0), MaxAge: -1,
 	})
-	http.Redirect(w, r, "/login", http.StatusFound)
+	redirectOrOK(w, r, uiLoginPath)
 }
 
 // guardRequest wraps the whole mux. It answers the two attacks that a bind

@@ -44,7 +44,7 @@ func TestKeyRoutesNeedTheSession(t *testing.T) {
 
 	for i, p := range paths {
 		rec := postKey(h, p, bodies[i], nil, "")
-		if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/login" {
+		if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/ui/login" {
 			t.Errorf("%s with no session: code=%d loc=%q, want 302 -> /login", p, rec.Code, rec.Header().Get("Location"))
 		}
 		if rec := postKey(h, p, bodies[i], nil, cfg.APIToken); rec.Code == http.StatusOK {
