@@ -50,3 +50,4 @@ Vitest + Testing Library + MSW (`onUnhandledRequest: 'error'`, jsdom, polyfill `
 - Shadcn MCP có thể lỗi cache `npx` (`Cannot find module '../llhttp/llhttp-wasm.js'`); dùng CLI trực tiếp, không xóa cache hệ thống.
 - Mỗi trang tự giữ chuỗi tiếng Việt trong thư mục của nó, không có từ điển chung (tránh tệp dùng chung giữa các task song song). UI tiếng Việt, không i18n.
 - Nếu một item shadcn cần cho trang nào đó chưa có, thêm vào danh sách ở đây thay vì để task trang sửa `package.json`.
+- Spike đã xong ở task 046: proxy dev phải viết lại `Origin` (nếu không `guardRequest` trả 403); `POST /login` và `POST /accounts` nhận form nên `client.ts` giữ `formRoutes`; headless Chrome có viewport tối thiểu 500 px nên đo 360 px bằng `Emulation.setDeviceMetricsOverride` qua CDP.

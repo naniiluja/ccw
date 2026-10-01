@@ -18,7 +18,7 @@ const (
 	acceptBrowser = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
 )
 
-func TestWantsJSON(t *testing.T) {
+func TestWantsJSONOnlyForAnExplicitJSONAccept(t *testing.T) {
 	for _, tc := range []struct {
 		accept string
 		want   bool

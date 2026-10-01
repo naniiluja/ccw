@@ -19,7 +19,7 @@ Mỗi luật ghi kèm **cách kiểm**:
 Luật cho `fe/` nằm ở `frontend.md`; cổng `pnpm lint`, `typecheck`, `test`, `build` chạy trong `scripts/check.sh`.
 
 ## Cấu trúc package
-- Không tạo package mới trước khi có nhu cầu thật (hai nơi dùng độc lập, hoặc một ranh giới phụ thuộc cần bảo vệ). Một package 15 đến 20 file là bình thường (`net/http` có 17). `internal/httpapi` hiện có 21 file không test. `[review]` `go list ./...` trong diff.
+- Không tạo package mới trước khi có nhu cầu thật (hai nơi dùng độc lập, hoặc một ranh giới phụ thuộc cần bảo vệ). Một package 15 đến 20 file là bình thường (`net/http` có 17). `internal/httpapi` hiện có 23 file không test. `[review]` `go list ./...` trong diff.
 - Interface nhỏ, khai báo ở **phía dùng**, chỉ khi có từ hai cài đặt hoặc cần seam cho test. Hiện có ba: `translate.Signatures`, `translate.Flusher`, `websearch.Searcher`. `[review]` `grep -rn '^type [A-Za-z]* interface' --include='*.go' internal`.
 - Functional options chỉ khi có từ ba tham số tùy chọn trở lên; ít hơn thì dùng tham số hoặc struct. `[review]`
 
@@ -30,7 +30,7 @@ Luật cho `fe/` nằm ở `frontend.md`; cổng `pnpm lint`, `typecheck`, `test
 
 ## State và global
 - Mỗi state struct có constructor `newX()` ngay cạnh kiểu; `newServerWithLog` gọi constructor, không rải composite literal. Tiền lệ: `newCatalog`, `newQuotaCache`, `newKeyLimiter`, `newZenState`, `newCopilotCache`, `newSigStore`, `newAutoState`, `newClaimTables`, `newRateHeaders`. Ngoại lệ có sẵn: `newCatalog` nằm ở `server.go` chứ không cạnh kiểu ở `v1.go`, và `rrNext` còn là literal `map[string]rrCursor{}`. `[review]` `grep -rn '^func new[A-Z]' --include='*.go' internal`.
-- Không thêm biến global thay đổi được trong code mới; tiêm qua field của `api` hoặc tham số. `[review]` `grep -rn '^var ' --include='*.go' internal cmd | grep -v _test` (lệnh này hiện in 92 dòng, kể cả các khối `var (`; các override cho test như `maxV1Body`, `copilotTokenURL`, `antigravityProdURL`, `autoTestRetry` là nợ cũ, chuyển sang field để làm sau).
+- Không thêm biến global thay đổi được trong code mới; tiêm qua field của `api` hoặc tham số. `[review]` `grep -rn '^var ' --include='*.go' internal cmd | grep -v _test` (lệnh này hiện in 93 dòng, kể cả các khối `var (` và `var static embed.FS` của `internal/webui`, bắt buộc là biến package vì `go:embed`; các override cho test như `maxV1Body`, `copilotTokenURL`, `antigravityProdURL`, `autoTestRetry` là nợ cũ, chuyển sang field để làm sau).
 - `init()` chỉ để điền bảng tĩnh. Hiện có ba và đều đúng luật: `translate/gemini.go` (`geminiDropKeys`), `httpapi/quota.go` (`quotaFetchers`), `httpapi/quota_resets.go` (`resetClaimers`). Gộp file phải giữ nguyên các phép gán đó. `[review]` `grep -rn '^func init()' --include='*.go' internal cmd`.
 
 ## Lỗi và log

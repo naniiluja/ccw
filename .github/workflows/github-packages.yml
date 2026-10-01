@@ -21,6 +21,15 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: be/go.mod
+      # scripts/check.sh also runs the fe/ gates, so the job needs pnpm and Node.
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: fe/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22.x'
+          cache: pnpm
+          cache-dependency-path: fe/pnpm-lock.yaml
       - name: Check (same gates as local scripts/check.sh)
         run: bash scripts/check.sh
   frontend:

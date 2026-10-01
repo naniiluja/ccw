@@ -31,8 +31,7 @@ const providers = [
   { id: 'github', setup: 'oauth', auth: 'oauth' },
 ]
 
-const redirect = () =>
-  new HttpResponse(null, { status: 302, headers: { Location: '/ui/' } })
+const redirect = () => HttpResponse.json({ ok: true })
 
 function mockList(list: unknown[] = accounts, tests: Record<string, unknown> = {}) {
   server.use(

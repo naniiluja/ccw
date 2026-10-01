@@ -68,9 +68,7 @@ func FromEnv() *Config {
 
 // New builds the searcher a config names.
 func New(c Config) (Searcher, error) {
-	if c.Count <= 0 || c.Count > 20 {
-		c.Count = 5
-	}
+	c.Count = c.EffectiveCount()
 	if c.Timeout <= 0 {
 		c.Timeout = 15 * time.Second
 	}
@@ -87,10 +85,15 @@ func New(c Config) (Searcher, error) {
 	return nil, fmt.Errorf("unknown search provider %q; use one of %s", c.Provider, strings.Join(Providers, ", "))
 }
 
-// Count is how many results one search asks for.
-func (c Config) count() int {
+// DefaultCount is how many results a search asks for when Count is unset or
+// out of range.
+const DefaultCount = 5
+
+// EffectiveCount is how many results one search asks for: Count when it is
+// between 1 and 20, DefaultCount otherwise.
+func (c Config) EffectiveCount() int {
 	if c.Count <= 0 || c.Count > 20 {
-		return 5
+		return DefaultCount
 	}
 	return c.Count
 }
@@ -99,7 +102,7 @@ type service struct{ c Config }
 
 func (s *service) Search(ctx context.Context, query string, count int) ([]Result, error) {
 	if count <= 0 {
-		count = s.c.count()
+		count = s.c.EffectiveCount()
 	}
 	ctx, cancel := context.WithTimeout(ctx, s.c.Timeout)
 	defer cancel()

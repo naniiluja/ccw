@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { KeyRoundIcon, LogInIcon, MonitorSmartphoneIcon, Loader2Icon } from 'lucide-react'
 import { useState } from 'react'
-import { useForm } from 'react-hook-form'
+import { Controller, useForm } from 'react-hook-form'
 import { toast } from 'sonner'
 import {
   accountProvidersQuery,
@@ -246,15 +246,22 @@ function KeyForm({
           </Field>
           <Field>
             <FieldLabel htmlFor="add-custom-api">{t.customApi}</FieldLabel>
-            <select
-              id="add-custom-api"
-              className="h-9 rounded-md border border-input bg-transparent px-2 text-sm"
-              {...form.register('api')}
-            >
-              <option value="openai">OpenAI</option>
-              <option value="anthropic">Anthropic</option>
-              <option value="responses">Responses</option>
-            </select>
+            <Controller
+              control={form.control}
+              name="api"
+              render={({ field }) => (
+                <Select value={field.value} onValueChange={field.onChange}>
+                  <SelectTrigger id="add-custom-api" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="openai">OpenAI</SelectItem>
+                    <SelectItem value="anthropic">Anthropic</SelectItem>
+                    <SelectItem value="responses">Responses</SelectItem>
+                  </SelectContent>
+                </Select>
+              )}
+            />
           </Field>
         </>
       ) : null}

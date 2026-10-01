@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/naniiluja/ccw/internal/store"
@@ -62,9 +63,6 @@ func TestSettingsDefaultsWithNoEnvironment(t *testing.T) {
 	}
 	if b.AuthMode != "password" || b.SessionTTLSeconds != 3600 {
 		t.Errorf("auth=%q ttl=%d", b.AuthMode, b.SessionTTLSeconds)
-	}
-	if b.Timezone != reportLocation().String() || b.Timezone == "" {
-		t.Errorf("timezone=%q", b.Timezone)
 	}
 	w := b.Websearch
 	if w.Provider != "" || w.URL != "" || w.KeySet || w.Count != 5 || w.Model != searchModel() {
@@ -171,5 +169,37 @@ func TestSettingsWithNoGateReportsNone(t *testing.T) {
 	rec, b := getSettings(t, h, "")
 	if rec.Code != 200 || b.AuthMode != "none" {
 		t.Errorf("code=%d mode=%q", rec.Code, b.AuthMode)
+	}
+}
+
+// resetReportZone makes reportLocation read CCW_TZ again, and does so once more
+// when the test ends so the cached zone never leaks into another test.
+func resetReportZone(t *testing.T) {
+	t.Helper()
+	tzOnce = sync.Once{}
+	t.Cleanup(func() { tzOnce = sync.Once{} })
+}
+
+func TestSettingsReportsTheEffectiveTimezone(t *testing.T) {
+	cases := []struct {
+		name, env, want string
+	}{
+		{"unset falls back to the fixed GMT+7 zone", "", "+07"},
+		{"a valid IANA name is reported as given", "Asia/Tokyo", "Asia/Tokyo"},
+		{"an unknown name falls back to the fixed GMT+7 zone", "Not/AZone", "+07"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("CCW_TZ", c.env)
+			resetReportZone(t)
+			_, h := settingsServer(t, true)
+			rec, b := getSettings(t, h, "machine-tok")
+			if rec.Code != 200 {
+				t.Fatalf("code=%d", rec.Code)
+			}
+			if b.Timezone != c.want {
+				t.Errorf("timezone=%q, want %q", b.Timezone, c.want)
+			}
+		})
 	}
 }

@@ -25,7 +25,7 @@ Philosophy: **viết test đỏ TRƯỚC** khi cài đặt hoặc sửa, vì đ�
 - Lệnh: `go test ./...`, một package `go test ./internal/translate/`.
 - Test nằm ở `<file>_test.go` cạnh file được test, cùng package. 89 file test được track (`git ls-files '*_test.go' | wc -l`): `internal/httpapi` 50, `internal/store` 10, `internal/translate` 9, `internal/auth` 4, các package khác 1 đến 3. File test được miễn giới hạn 1000 dòng.
 - Helper dùng chung gọi `t.Helper()` (ví dụ `mustJSON` trong `internal/translate/translate_test.go`, `moduleRoot` trong `arch_test.go`).
-- Test nhiều case cùng cấu trúc viết table-driven với `t.Run` (hiện 12 file dùng `t.Run`: `git ls-files '*_test.go' | xargs grep -l 't\.Run(' | wc -l`); còn lại kiểm trực tiếp trên JSON.
+- Test nhiều case cùng cấu trúc viết table-driven với `t.Run` (hiện 13 file dùng `t.Run`: `git ls-files '*_test.go' | xargs grep -l 't\.Run(' | wc -l`); còn lại kiểm trực tiếp trên JSON.
 - Golden Zen: `internal/httpapi/testdata/zen/` (`cases.json`, 4 file `*.golden.json`), dùng bởi `TestZenRequestsMatchTheGatewayItReplaces`. Đọc `README.md` cùng thư mục trước khi ghi lại; cập nhật golden phải xem diff, không ghi đè mù. Refactor `translate` hay `providers.go` không được đổi golden.
 
 ## Bộ test bảo vệ bản phát hành công khai (`cmd/ccw/release_test.go`)

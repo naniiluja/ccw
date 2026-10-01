@@ -1,5 +1,5 @@
 import { queryOptions } from '@tanstack/react-query'
-import { ApiError, api } from './client'
+import { api } from './client'
 
 // The server never sends a credential for an account, so none of these types
 // carries one. A key typed into the add form goes out once and is not kept.
@@ -70,48 +70,6 @@ export const accountProvidersQuery = queryOptions({
 
 const enc = encodeURIComponent
 
-// These two routes answer with a redirect to the dashboard instead of JSON.
-// The browser must not follow it (it would land on the HTML page), so the
-// redirect itself is the success signal.
-async function postForRedirect(
-  path: string,
-  form?: Record<string, string>,
-): Promise<void> {
-  let res: Response
-  try {
-    res = await fetch(path, {
-      method: 'POST',
-      credentials: 'same-origin',
-      redirect: 'manual',
-      headers: {
-        Accept: 'application/json',
-        ...(form ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}),
-      },
-      body: form ? new URLSearchParams(form).toString() : undefined,
-    })
-  } catch {
-    throw new ApiError('Không kết nối được tới máy chủ', 0)
-  }
-  if (
-    res.ok ||
-    res.type === 'opaqueredirect' ||
-    (res.status >= 300 && res.status < 400)
-  ) {
-    return
-  }
-  let message = `Yêu cầu thất bại (${res.status})`
-  try {
-    const data: unknown = await res.json()
-    if (data && typeof data === 'object' && 'error' in data) {
-      const text = (data as { error: unknown }).error
-      if (typeof text === 'string' && text) message = text
-    }
-  } catch {
-    // Not JSON; keep the generic message.
-  }
-  throw new ApiError(message, res.status)
-}
-
 export interface NewAccount {
   provider: string
   label?: string
@@ -121,16 +79,18 @@ export interface NewAccount {
   api?: string
 }
 
-export function createAccount(input: NewAccount): Promise<void> {
+// POST /accounts reads a form body (see formRoutes in client.ts); empty fields
+// are left out so the server applies its own defaults.
+export function createAccount(input: NewAccount): Promise<unknown> {
   const form: Record<string, string> = {}
   for (const [k, v] of Object.entries(input)) {
     if (v) form[k] = v
   }
-  return postForRedirect('/accounts', form)
+  return api('/accounts', { method: 'POST', body: form })
 }
 
 export const deleteAccount = (id: string) =>
-  postForRedirect(`/accounts/${enc(id)}/delete`)
+  api(`/accounts/${enc(id)}/delete`, { method: 'POST' })
 
 export const setLabel = (id: string, label: string) =>
   api(`/accounts/${enc(id)}/label`, { method: 'POST', body: { label } })

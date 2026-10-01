@@ -8,10 +8,6 @@ import (
 	"github.com/naniiluja/ccw/internal/websearch"
 )
 
-// defaultSearchCount is how many results a search asks for when CCW_SEARCH_COUNT
-// is unset or out of range; it matches websearch.New.
-const defaultSearchCount = 5
-
 // settingsWebsearch is the web search part of GET /api/settings. The key is
 // reported only as a flag.
 type settingsWebsearch struct {
@@ -36,7 +32,7 @@ func (a *api) getSettings(w http.ResponseWriter, r *http.Request) {
 	v := settingsView{
 		AuthMode:  "none",
 		Timezone:  reportLocation().String(),
-		Websearch: settingsWebsearch{Model: searchModel(), Count: defaultSearchCount},
+		Websearch: settingsWebsearch{Model: searchModel(), Count: websearch.DefaultCount},
 	}
 	if a.auth != nil {
 		v.AuthMode = "password"
@@ -46,9 +42,7 @@ func (a *api) getSettings(w http.ResponseWriter, r *http.Request) {
 		v.Websearch.Provider = c.Provider
 		v.Websearch.KeySet = c.Key != ""
 		v.Websearch.URL = publicURL(c.BaseURL)
-		if c.Count > 0 && c.Count <= 20 {
-			v.Websearch.Count = c.Count
-		}
+		v.Websearch.Count = c.EffectiveCount()
 	}
 	writeJSON(w, v)
 }
