@@ -24,6 +24,7 @@ import (
 	"github.com/naniiluja/ccw/internal/drift"
 	"github.com/naniiluja/ccw/internal/store"
 	"github.com/naniiluja/ccw/internal/translate"
+	"github.com/naniiluja/ccw/internal/webui"
 )
 
 const sessionCookie = "ccw_session"
@@ -160,6 +161,13 @@ func (a *api) registerRoutes(mux *http.ServeMux) {
 	// One base URL: the model in the body picks the provider and its accounts.
 	// The contract of /v1 is public, like the API it describes.
 	mux.HandleFunc("GET /openapi.json", serveOpenAPI)
+	// The dashboard SPA is public: its login page has to load before a session
+	// exists. "GET /{path...}" would conflict with /v1/{path...}, so the root
+	// redirect is an exact match and the app owns the /ui/ subtree.
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/ui/", http.StatusFound)
+	})
+	mux.Handle("GET /ui/", webui.Handler())
 	mux.HandleFunc("GET /v1/models", a.v1API(a.requireToken(a.models)))
 	mux.HandleFunc("GET /v1/models/{model...}", a.v1API(a.requireToken(a.model)))
 	mux.HandleFunc("/v1/{path...}", a.v1API(a.requireToken(a.v1)))

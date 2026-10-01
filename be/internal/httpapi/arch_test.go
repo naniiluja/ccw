@@ -93,6 +93,22 @@ func TestOnlyCmdImportsHTTPAPI(t *testing.T) {
 	}
 }
 
+// TestWebUIIsALeaf keeps the embedded-SPA package free of internal imports.
+func TestWebUIIsALeaf(t *testing.T) {
+	for _, p := range listPackages(t) {
+		if p.ImportPath != modulePath+"/internal/webui" {
+			continue
+		}
+		for _, imp := range p.Imports {
+			if internalName(imp) != imp {
+				t.Errorf("internal/webui imports %s; it must stay a leaf", imp)
+			}
+		}
+		return
+	}
+	t.Fatal("internal/webui not found by go list")
+}
+
 func TestStoreDoesNotImportHigherLayers(t *testing.T) {
 	forbidden := map[string]bool{"httpapi": true, "translate": true, "drift": true}
 	for _, p := range listPackages(t) {
