@@ -19,7 +19,6 @@ type APIKey struct {
 	Key     string `json:"key,omitempty"`
 	Masked  string `json:"masked"`
 	Enabled bool   `json:"enabled"`
-	Trusted bool   `json:"trusted"`
 	// Models lists the "<provider>/<model>" ids the key may call. Empty means
 	// every model.
 	Models []string `json:"models"`
@@ -58,7 +57,6 @@ CREATE TABLE IF NOT EXISTS api_keys (
 	name       TEXT NOT NULL,
 	key        TEXT NOT NULL UNIQUE,
 	enabled    INTEGER NOT NULL DEFAULT 1,
-	trusted    INTEGER NOT NULL DEFAULT 0,
 	models     TEXT NOT NULL DEFAULT '',
 	created_at TEXT NOT NULL
 );
@@ -101,7 +99,6 @@ func (s *Store) migrateAPIKeys() error {
 	}
 	rows.Close()
 	for _, col := range []struct{ name, def string }{
-		{"trusted", "INTEGER NOT NULL DEFAULT 0"},
 		{"models", "TEXT NOT NULL DEFAULT ''"},
 		{"expires_at", "TEXT NOT NULL DEFAULT ''"},
 		{"rpm", "INTEGER NOT NULL DEFAULT 0"},
@@ -157,10 +154,10 @@ func (s *Store) CreateAPIKey(name string, models []string) (APIKey, error) {
 		return APIKey{}, err
 	}
 	enc := encodeModels(models)
-	k := APIKey{ID: id, Name: name, Key: "sk-ccw-" + hex.EncodeToString(b), Enabled: true, Trusted: false,
+	k := APIKey{ID: id, Name: name, Key: "sk-ccw-" + hex.EncodeToString(b), Enabled: true,
 		Models: parseModels(enc), CreatedAt: time.Now().UTC().Format(time.RFC3339)}
 	k.Masked = mask(k.Key)
-	if _, err := s.DB.Exec(`INSERT INTO api_keys (id, name, key, enabled, trusted, models, created_at) VALUES (?, ?, ?, 1, 0, ?, ?)`,
+	if _, err := s.DB.Exec(`INSERT INTO api_keys (id, name, key, enabled, models, created_at) VALUES (?, ?, ?, 1, ?, ?)`,
 		k.ID, k.Name, k.Key, enc, k.CreatedAt); err != nil {
 		return APIKey{}, fmt.Errorf("insert api key: %w", err)
 	}
@@ -169,7 +166,7 @@ func (s *Store) CreateAPIKey(name string, models []string) (APIKey, error) {
 
 // ListAPIKeys returns every key, newest first, masked.
 func (s *Store) ListAPIKeys() ([]APIKey, error) {
-	rows, err := s.DB.Query(`SELECT id, name, key, enabled, trusted, models, expires_at, rpm, last_used, created_at FROM api_keys ORDER BY created_at DESC`)
+	rows, err := s.DB.Query(`SELECT id, name, key, enabled, models, expires_at, rpm, last_used, created_at FROM api_keys ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("query api keys: %w", err)
 	}
@@ -178,11 +175,11 @@ func (s *Store) ListAPIKeys() ([]APIKey, error) {
 	for rows.Next() {
 		var k APIKey
 		var full, models string
-		var en, tr int
-		if err := rows.Scan(&k.ID, &k.Name, &full, &en, &tr, &models, &k.ExpiresAt, &k.RPM, &k.LastUsed, &k.CreatedAt); err != nil {
+		var en int
+		if err := rows.Scan(&k.ID, &k.Name, &full, &en, &models, &k.ExpiresAt, &k.RPM, &k.LastUsed, &k.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan api key: %w", err)
 		}
-		k.Masked, k.Enabled, k.Trusted, k.Models = mask(full), en != 0, tr != 0, parseModels(models)
+		k.Masked, k.Enabled, k.Models = mask(full), en != 0, parseModels(models)
 		out = append(out, k)
 	}
 	return out, rows.Err()
@@ -247,50 +244,6 @@ func (s *Store) ValidAPIKey(k string) bool {
 	}
 	var one int
 	return s.DB.QueryRow(`SELECT 1 FROM api_keys WHERE key = ? AND enabled = 1`, k).Scan(&one) == nil
-}
-
-// SetAPIKeyTrusted turns the trusted flag of a key on or off.
-// When revoked, open traces of this key are moved to status 'revoked'.
-func (s *Store) SetAPIKeyTrusted(id string, trusted bool) error {
-	v := 0
-	if trusted {
-		v = 1
-	}
-	res, err := s.DB.Exec(`UPDATE api_keys SET trusted = ? WHERE id = ?`, v, id)
-	if err != nil {
-		return fmt.Errorf("set api key trusted: %w", err)
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrKeyNotFound
-	}
-	if !trusted {
-		_, _ = s.DB.Exec(`UPDATE contract_traces SET status = 'revoked' WHERE key_id = ? AND status = 'open'`, id)
-	}
-	return nil
-}
-
-// IsKeyTrusted reports whether an enabled key is trusted.
-func (s *Store) IsKeyTrusted(id string) bool {
-	if id == "" {
-		return false
-	}
-	var tr int
-	if s.DB.QueryRow(`SELECT trusted FROM api_keys WHERE id = ? AND enabled = 1`, id).Scan(&tr) != nil {
-		return false
-	}
-	return tr != 0
-}
-
-// APIKeyInfoByToken returns id, name, and trusted flag for an enabled key.
-func (s *Store) APIKeyInfoByToken(tok string) (id, name string, trusted bool, ok bool) {
-	if tok == "" {
-		return "", "", false, false
-	}
-	var tr int
-	if s.DB.QueryRow(`SELECT id, name, trusted FROM api_keys WHERE key = ? AND enabled = 1`, tok).Scan(&id, &name, &tr) != nil {
-		return "", "", false, false
-	}
-	return id, name, tr != 0, true
 }
 
 // APIKeyByToken returns an enabled key with its model list and limits, without

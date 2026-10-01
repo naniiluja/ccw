@@ -31,47 +31,6 @@ func TestAuthDecisionAcceptsAConfiguredGate(t *testing.T) {
 	}
 }
 
-func TestC17ContractResetCLI(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "cli_reset.db")
-	s, err := store.Open(dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-
-	if err := s.UpsertContractLearned(store.ContractLearned{
-		Kind: "model", Subject: "m1", Direction: "request", Half: "intact", Format: "openai", Path: "p1", Type: "string", KeyID: "k", ReducerVersion: 1,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	// 1. Both flags -> returns error, deletes nothing
-	err = runContractReset([]string{"--db", dbPath, "--key", "k", "--reducer", "1"})
-	if err == nil {
-		t.Fatal("expected error with both --key and --reducer, got nil")
-	}
-	learned, _ := s.ListContractLearned("model", "m1")
-	if len(learned) != 1 {
-		t.Fatalf("expected learned row to be preserved, got %d", len(learned))
-	}
-
-	// 2. Neither flag -> returns error
-	err = runContractReset([]string{"--db", dbPath})
-	if err == nil {
-		t.Fatal("expected error with neither flag, got nil")
-	}
-
-	// 3. --key alone -> succeeds and deletes
-	err = runContractReset([]string{"--db", dbPath, "--key", "k"})
-	if err != nil {
-		t.Fatalf("expected success with --key alone, got %v", err)
-	}
-	learned, _ = s.ListContractLearned("model", "m1")
-	if len(learned) != 0 {
-		t.Fatalf("expected 0 learned rows after key reset, got %d", len(learned))
-	}
-}
-
 // Each new install gets its own TOTP secret on its first start, kept in its database and
 // shown once with the steps to add it to an authenticator app. An environment secret wins.
 func TestTOTPSecretIsCreatedOncePerInstall(t *testing.T) {

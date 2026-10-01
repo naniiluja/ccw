@@ -357,8 +357,8 @@ func (a *api) autoBlacklist(c store.ShapeChange, facts map[string]any) string {
 	return "blacklisted " + pattern
 }
 
-// reviewPending judges the drift changes and the contract findings waiting
-// for a verdict, then hands the ones judged before a resolver was set to it.
+// reviewPending judges the drift changes waiting for a verdict, then hands the
+// ones judged before a resolver was set to it.
 // It stops at the first failure of a model.
 func (a *api) reviewPending(ctx context.Context) (int, error) {
 	if !a.review.run.TryLock() {
@@ -372,12 +372,7 @@ func (a *api) reviewPending(ctx context.Context) (int, error) {
 	if !a.reviewReady(cfg) {
 		return 0, fmt.Errorf("no active account serves the decision model %s", cfg.DecisionModel)
 	}
-	n, err := a.reviewDrift(ctx, cfg)
-	if err != nil {
-		return n, err
-	}
-	m, err := a.reviewFindings(ctx, cfg)
-	return n + m, err
+	return a.reviewDrift(ctx, cfg)
 }
 
 // reviewDrift judges the drift changes of one pass.

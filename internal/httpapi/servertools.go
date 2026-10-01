@@ -55,7 +55,7 @@ func (a *api) serverTools(w http.ResponseWriter, r *http.Request, body []byte, t
 	}
 	for {
 		rec := &recorder{header: http.Header{}, code: http.StatusOK}
-		a.failover(rec, r, req, targets, start, nil)
+		a.failover(rec, r, req, targets, start)
 		if rec.code != http.StatusOK {
 			rec.copyTo(w)
 			return

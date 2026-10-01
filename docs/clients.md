@@ -2,16 +2,15 @@
 
 Point a coding tool at ccw and it needs nothing else. ccw does the
 conversion between shapes, so there is no local proxy to run next to the tool.
-Any tool that writes the tool's own config can set this up; the steps below use
-[CC Switch](https://github.com/farion1231/cc-switch), which does.
 
 Make an API key first: **Endpoint → API keys** in the dashboard. Name a model
 `<provider>/<model>` (see [Routing](routing.md)); `GET /v1/models` lists them.
 
 ## Claude Code
 
-In CC Switch add a **Custom** provider for Claude, with the upstream format
-**Anthropic Messages (native)**. It writes these into `~/.claude/settings.json`:
+Claude Code speaks the Anthropic Messages API, which ccw serves natively. Point
+it at ccw with `ANTHROPIC_BASE_URL` and the ccw API key, in the `env` block of
+`~/.claude/settings.json` (or as environment variables of the shell):
 
 ```json
 {
@@ -50,9 +49,6 @@ Run against a live ccw, with the config above in a scratch
 
 - Claude Code: a three-turn task with two tool calls and thinking on.
 - The pinned 1M window in Claude Code (`modelUsage.contextWindow` read 1000000).
-
-Not tried here: the CC Switch window itself (its form labels) was not driven,
-so those steps come from its source and changelog.
 
 ## Web search and web fetch
 

@@ -73,3 +73,44 @@ func TestKeyRoutesNeedTheSession(t *testing.T) {
 		t.Errorf("the key was not deleted: %+v", list)
 	}
 }
+
+// A key carries no trusted flag: the create answer and the listing have no
+// "trusted" field, and the route that set it is gone.
+func TestKeyCreationHasNoTrustedFlag(t *testing.T) {
+	s, _ := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	defer s.Close()
+	cfg := authConfig()
+	h := NewWithAuth(s, nil, cfg)
+	ck := loginCookie(t, h, cfg)
+
+	req := loopbackRequest("POST", "/keys", strings.NewReader(`{"name":"laptop"}`))
+	req.AddCookie(ck)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	var created map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil || created["id"] == nil {
+		t.Fatalf("create key: %d %s", rec.Code, rec.Body.String())
+	}
+	if _, ok := created["trusted"]; ok {
+		t.Errorf("create answer has a trusted field: %s", rec.Body.String())
+	}
+
+	req = loopbackRequest("GET", "/keys", nil)
+	req.AddCookie(ck)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	var listed struct {
+		Keys []map[string]any `json:"keys"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &listed); err != nil || len(listed.Keys) != 1 {
+		t.Fatalf("list keys: %d %s", rec.Code, rec.Body.String())
+	}
+	if _, ok := listed.Keys[0]["trusted"]; ok {
+		t.Errorf("listing has a trusted field: %s", rec.Body.String())
+	}
+
+	id, _ := created["id"].(string)
+	if rec := postKey(h, "/keys/"+id+"/trusted", `{"trusted":true}`, ck, ""); rec.Code == http.StatusOK {
+		t.Errorf("POST /keys/{id}/trusted answered 200: %s", rec.Body.String())
+	}
+}

@@ -66,21 +66,6 @@ func (a *api) setKeyActive(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true})
 }
 
-func (a *api) setKeyTrusted(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Trusted bool `json:"trusted"`
-	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10)).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "bad json")
-		return
-	}
-	if err := a.store.SetAPIKeyTrusted(r.PathValue("id"), body.Trusted); err != nil {
-		writeError(w, http.StatusNotFound, "unknown api key")
-		return
-	}
-	writeJSON(w, map[string]any{"ok": true})
-}
-
 // setKeyModels replaces the models a key may call from {"models": […]}.
 func (a *api) setKeyModels(w http.ResponseWriter, r *http.Request) {
 	var body struct {

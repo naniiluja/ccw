@@ -15,7 +15,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/naniiluja/ccw/internal/contract"
 	"github.com/naniiluja/ccw/internal/drift"
 	"github.com/naniiluja/ccw/internal/filter"
 	"github.com/naniiluja/ccw/internal/provider"
@@ -68,7 +67,7 @@ func (a *api) newOutbound(r *http.Request, p provider.Provider, providerID, path
 		// Authorization and X-Api-Key carry ccw's own token, which must never
 		// reach a provider; the account's credential replaces them below. A clean
 		// provider gets none of the caller's headers.
-		if p.Clean || hopByHop[k] || k == "Authorization" || k == "X-Api-Key" || k == "Host" || k == "Accept-Encoding" || strings.EqualFold(k, "X-Ccw-Trace") {
+		if p.Clean || hopByHop[k] || k == "Authorization" || k == "X-Api-Key" || k == "Host" || k == "Accept-Encoding" {
 			continue
 		}
 		for _, v := range vs {
@@ -114,7 +113,7 @@ func (a *api) newOutbound(r *http.Request, p provider.Provider, providerID, path
 }
 
 // relayObserved relays a passthrough answer and shows it to the drift observer.
-func (a *api) relayObserved(w http.ResponseWriter, resp *http.Response, connID, provider, path string, cap *contract.Capture) {
+func (a *api) relayObserved(w http.ResponseWriter, resp *http.Response, connID, provider, path string) {
 	a.rate.capture(connID, resp.Header)
 	for k, vs := range resp.Header {
 		if hopByHop[k] {
@@ -123,12 +122,7 @@ func (a *api) relayObserved(w http.ResponseWriter, resp *http.Response, connID, 
 		copyHeader(w.Header(), k, vs)
 	}
 	w.WriteHeader(resp.StatusCode)
-	tapped, clientErr, upstreamErr := streamBody(w, resp, cap)
-	if cap != nil {
-		close(cap.ProducerDone)
-		isSSE := isEventStream(resp, tapped)
-		_ = cap.Seal(isSSE, clientErr, upstreamErr)
-	}
+	tapped := streamBody(w, resp)
 	a.recordUsage(connID, keyIDOf(resp), tapped, resp.Header.Get("Content-Encoding"))
 	if resp.StatusCode < 300 && resp.Header.Get("Content-Encoding") == "" && watched(provider) {
 		a.drift.Observe(drift.Response, provider, path, tapped, isEventStream(resp, tapped))
@@ -195,20 +189,15 @@ func gunzip(b []byte) ([]byte, error) {
 // It returns a bounded copy of the body so the usage counter can be read without
 // a second upstream call. The tap only reads; the caller's bytes are written
 // first and are never altered by it.
-func streamBody(w http.ResponseWriter, resp *http.Response, cap *contract.Capture) ([]byte, error, error) {
+func streamBody(w http.ResponseWriter, resp *http.Response) []byte {
 	rc := http.NewResponseController(w)
 	tap := &respTap{headLimit: usageTapHeadLimit, tailLimit: usageTapTailLimit}
 	buf := make([]byte, 32*1024)
-	var clientErr, upstreamErr error
 	for {
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
-			if cap != nil {
-				cap.WriteResp(buf[:n])
-			}
 			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
-				clientErr = writeErr
-				return tap.bytes(), clientErr, upstreamErr
+				return tap.bytes()
 			}
 			tap.write(buf[:n])
 			// A flush failure only means this writer cannot flush; keep copying.
@@ -218,10 +207,9 @@ func streamBody(w http.ResponseWriter, resp *http.Response, cap *contract.Captur
 			if !errors.Is(readErr, io.EOF) {
 				// A stream cut in the middle still reaches the caller as a 200
 				// with a short body, so only this line says why it stopped.
-				upstreamErr = readErr
 				log.Printf("upstream stream ended early: %v", readErr)
 			}
-			return tap.bytes(), clientErr, upstreamErr
+			return tap.bytes()
 		}
 	}
 }

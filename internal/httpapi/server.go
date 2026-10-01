@@ -2,7 +2,6 @@
 package httpapi
 
 import (
-	"log"
 	"math"
 	"net/http"
 	"strconv"
@@ -11,7 +10,6 @@ import (
 	"time"
 
 	"github.com/naniiluja/ccw/internal/auth"
-	"github.com/naniiluja/ccw/internal/contract"
 	"github.com/naniiluja/ccw/internal/drift"
 	"github.com/naniiluja/ccw/internal/store"
 )
@@ -61,10 +59,6 @@ type api struct {
 	claimLocks refreshLocks
 	// claims tracks unknown, hold, and done claim states across connections.
 	claims claimTables
-	// contractMgr manages trace capture and half processing.
-	contractMgr *contract.CaptureManager
-	// consumer processes queued traces for diff, judge, learning and change detection.
-	consumer *contract.Consumer
 	// zen holds the session pool and catalogue of the OpenCode Zen provider.
 	zen zenState
 	// web is the search service for a client that asks its model to search.
@@ -86,16 +80,6 @@ func NewWithAuth(s *store.Store, baseOverride map[string]string, authCfg *auth.C
 
 // newServer builds the api and its routes; tests reach the api through it.
 func newServer(s *store.Store, baseOverride map[string]string, authCfg *auth.Config) (*api, http.Handler) {
-	contractKey, _ := s.GetContractKey()
-	contractMgr := contract.NewCaptureManager(s, contractKey)
-	judgeAdapter := &contractJudgeAdapter{}
-	judgeMgr := contract.NewJudgeManager(s, judgeAdapter)
-	consumer := contract.NewConsumer(s, judgeMgr, func(model, tool, text string) {
-		log.Printf("contract change alert: model=%s tool=%s %s", model, tool, text)
-	})
-	contractMgr.SetEnqueue(func(traceID string) { consumer.Enqueue(traceID) })
-	consumer.SetReleaseQueueSlot(contractMgr.ReleaseQueueSlot)
-	_ = consumer.StartupRecovery()
 	a := &api{store: s, baseOverride: baseOverride, auth: authCfg, rrNext: map[string]rrCursor{},
 		keyLim:  keyLimiter{seen: map[string][]time.Time{}},
 		cat:     catalog{m: map[string]catalogEntry{}, inflight: map[string]*catalogFetch{}},
@@ -103,13 +87,9 @@ func newServer(s *store.Store, baseOverride map[string]string, authCfg *auth.Con
 		sigs:    sigStore{m: map[string]sigEntry{}}, drift: drift.New(s),
 		rate: rateHeaders{m: map[string]rateSnapshot{}}, quota: quotaCache{m: map[string]AccountQuota{}, highWater: map[string]uint64{}, flights: map[string]*quotaFlight{}},
 		auto: autoState{running: map[string]*autoRun{}}, login: newLoginGuard(),
-		claims:      claimTables{unknown: map[string]claimUnknownEntry{}, hold: map[string]claimHoldEntry{}, done: map[string]claimDoneEntry{}},
-		contractMgr: contractMgr,
-		consumer:    consumer,
-		zen:         newZenState(),
+		claims: claimTables{unknown: map[string]claimUnknownEntry{}, hold: map[string]claimHoldEntry{}, done: map[string]claimDoneEntry{}},
+		zen:    newZenState(),
 	}
-	judgeAdapter.a = a
-	consumer.Start()
 	go a.autoTestLoop()
 	a.loadDefs()
 	a.migrateCustomEndpoints()
@@ -117,7 +97,6 @@ func newServer(s *store.Store, baseOverride map[string]string, authCfg *auth.Con
 	go a.arenaLoop()
 	go a.reviewLoop()
 	go a.errorReviewLoop()
-	go a.contractPruneLoop()
 	mux := http.NewServeMux()
 	// One base URL: the model in the body picks the provider and its accounts.
 	// The contract of /v1 is public, like the API it describes.
@@ -228,7 +207,6 @@ func newServer(s *store.Store, baseOverride map[string]string, authCfg *auth.Con
 	mux.HandleFunc("POST /keys", a.requireSession(a.createKey))
 	mux.HandleFunc("POST /keys/{id}/reveal", a.requireSession(a.revealKey))
 	mux.HandleFunc("POST /keys/{id}/active", a.requireSession(a.setKeyActive))
-	mux.HandleFunc("POST /keys/{id}/trusted", a.requireSession(a.setKeyTrusted))
 	mux.HandleFunc("POST /keys/{id}/models", a.requireSession(a.setKeyModels))
 	mux.HandleFunc("POST /keys/{id}/limits", a.requireSession(a.setKeyLimits))
 	mux.HandleFunc("GET /keys/{id}/usage", a.requireSession(a.keyUsage))
@@ -239,19 +217,6 @@ func newServer(s *store.Store, baseOverride map[string]string, authCfg *auth.Con
 	mux.HandleFunc("GET /usage", a.requireSession(a.usage))
 	mux.HandleFunc("POST /login", a.loginSubmit)
 	mux.HandleFunc("POST /logout", a.logout)
-	// Contract Lab routes
-	mux.HandleFunc("POST /api/contracts/traces/{id}/half", a.requireToken(a.contractTraceHalf))
-	mux.HandleFunc("GET /api/contracts/traces/{id}", a.requireToken(a.contractTraceStatus))
-	mux.HandleFunc("GET /api/contracts/policy", a.requireToken(a.contractPolicy))
-	mux.HandleFunc("GET /api/contracts", a.requireToken(a.contractIndex))
-	mux.HandleFunc("GET /api/contracts/models/{model}", a.requireToken(a.contractModelDetails))
-	mux.HandleFunc("GET /api/contracts/findings", a.requireToken(a.contractFindings))
-	mux.HandleFunc("GET /api/contracts/fixtures/{traceId}", a.requireToken(a.contractFixture))
-	mux.HandleFunc("POST /api/contracts/findings/{id}/resolve", a.requireToken(a.contractResolveFinding))
-	mux.HandleFunc("GET /api/contracts/traces", a.requireToken(a.contractTracesList))
-	mux.HandleFunc("GET /api/contracts/findings/{id}/history", a.requireToken(a.contractFindingHistory))
-	mux.HandleFunc("GET /api/contracts/signatures", a.requireToken(a.contractSignaturesList))
-	mux.HandleFunc("POST /api/contracts/signatures/verdict", a.requireAdmin(a.contractReviewSignature))
 	return a, a.guardRequest(collapseV1(mux))
 }
 
@@ -276,20 +241,6 @@ func collapseV1Path(p string) string {
 		p = p[len("/v1"):]
 	}
 	return p
-}
-
-// isCallerTrusted determines whether the request principal is trusted for contract writes/read gates.
-func (a *api) isCallerTrusted(p principal) bool {
-	if p.name == "intact-review" {
-		return false
-	}
-	if p.admin {
-		return true
-	}
-	if p.keyID != "" {
-		return a.store.IsKeyTrusted(p.keyID)
-	}
-	return false
 }
 
 // requireSession lets a request through when auth is off or the session cookie
