@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/naniiluja/ccw/internal/filter"
-	"github.com/naniiluja/ccw/internal/provider"
 	"github.com/naniiluja/ccw/internal/store"
 )
 
@@ -41,8 +40,6 @@ const (
 	errReviewKey      = "error-review-config"
 	errReviewBatch    = 5
 	errReviewSnooze   = 24 * time.Hour
-	errBurstCount     = 20
-	errBurstWindow    = time.Hour
 	defaultErrMin     = 3
 	errReplayTimeout  = 90 * time.Second
 	errPromptReqLimit = 14 << 10
@@ -398,11 +395,7 @@ func (a *api) reviewErrorGroup(ctx context.Context, cfg ErrorReviewConfig, g Err
 		default:
 			reproduced = fmt.Sprintf("the same request fails again: %d %s", st, msg)
 			if g.Classes[ClassFake429] > 0 && a.settleFake429(ctx, &v, g, e, req) {
-				saved, err := a.store.AddErrorVerdict(v)
-				if err == nil {
-					a.alertVerdict(saved, g)
-				}
-				return saved, err
+				return a.store.AddErrorVerdict(v)
 			}
 		}
 	}
@@ -431,11 +424,7 @@ func (a *api) reviewErrorGroup(ctx context.Context, cfg ErrorReviewConfig, g Err
 	default:
 		a.tryDisableAccount(&v, g, cfg)
 	}
-	saved, err := a.store.AddErrorVerdict(v)
-	if err == nil && v.Action != "ignore" {
-		a.alertVerdict(saved, g)
-	}
-	return saved, err
+	return a.store.AddErrorVerdict(v)
 }
 
 func (a *api) tryBlacklist(ctx context.Context, v *store.ErrorVerdict, e store.UpstreamError, req []byte, p errProposal, canReplay bool) {
@@ -592,33 +581,6 @@ func truncate(s string, n int) string {
 	return s
 }
 
-func (a *api) alertVerdict(v store.ErrorVerdict, g ErrorGroup) {
-	lines := []string{"Provider: " + pnameOf(v.Provider), "Error: " + truncate(g.Message, 200),
-		fmt.Sprintf("Errors in 24h: %d", g.Count)}
-	if v.Reason != "" {
-		lines = append(lines, "Why: "+v.Reason)
-	}
-	if v.Note != "" {
-		lines = append(lines, "Checked: "+truncate(v.Note, 300))
-	}
-	lines = append(lines, "By: "+v.By)
-	if v.Applied {
-		title := map[string]string{"blacklist": "Blacklisted " + v.Detail, "disable_model": "Model switched off: " + v.Detail,
-			"disable_account": "Account switched off: " + v.Detail}[v.Action]
-		a.notify(EventErrorAction, "", 0, notifyMsg{Title: title, Lines: lines, Path: "#/errors/groups"})
-		return
-	}
-	a.notify(EventErrorUnresolved, "unresolved|"+v.Provider+"|"+v.Signature, errReviewSnooze,
-		notifyMsg{Title: "Error not fixed (" + v.Action + " refused)", Lines: lines, Path: "#/errors/groups"})
-}
-
-func pnameOf(id string) string {
-	if d, ok := provider.Declared(id); ok && d.Name != "" {
-		return d.Name
-	}
-	return id
-}
-
 // reviewErrors judges the groups due. It stops at the first failure of the
 // model.
 func (a *api) reviewErrors(ctx context.Context) (int, error) {
@@ -659,34 +621,10 @@ func needsOwnerApproval(e store.UpstreamError) bool {
 	return e.ClientKeyID != "" || e.Client == ccwJob.name
 }
 
-// alertBursts tells the channels of a group of errors growing fast, once in
-// six hours per group.
-func (a *api) alertBursts() {
-	groups, err := a.errorGroups(store.ErrorFilter{Since: time.Now().UTC().Add(-errBurstWindow).Format(time.RFC3339)})
-	if err != nil {
-		return
-	}
-	for _, g := range groups {
-		if g.Count < errBurstCount {
-			continue
-		}
-		classes := []string{}
-		for c, n := range g.Classes {
-			classes = append(classes, fmt.Sprintf("%s ×%d", c, n))
-		}
-		a.notify(EventErrorBurst, "burst|"+g.Provider+"|"+g.Signature, 6*time.Hour, notifyMsg{
-			Title: fmt.Sprintf("%d errors in an hour from %s", g.Count, pnameOf(g.Provider)),
-			Lines: []string{"Error: " + truncate(g.Message, 200), "Classes: " + strings.Join(classes, ", "),
-				"Models: " + strings.Join(g.Models, ", ")},
-			Path: "#/errors/groups"})
-	}
-}
-
-// errorReviewLoop runs the error review and the burst alerts.
+// errorReviewLoop runs the error review.
 func (a *api) errorReviewLoop() {
 	time.Sleep(2 * time.Minute)
 	for {
-		a.alertBursts()
 		a.errReview.mu.Lock()
 		paused := time.Now().Before(a.errReview.pauseTill)
 		a.errReview.mu.Unlock()
@@ -698,28 +636,22 @@ func (a *api) errorReviewLoop() {
 }
 
 // errorReviewOnce runs one pass and records a failure of the model. A pass
-// that is already running is not a failure, so it neither pauses nor alerts.
+// that is already running is not a failure, so it does not pause.
 func (a *api) errorReviewOnce() {
 	n, err := a.reviewErrors(context.Background())
 	switch {
 	case errors.Is(err, errReviewRunning):
 	case err != nil:
-		a.pauseErrReview(err)
+		log.Printf("error review: %v", err)
+		a.errReview.mu.Lock()
+		a.errReview.pauseTill, a.errReview.lastError = time.Now().Add(reviewBackoff), err.Error()
+		a.errReview.mu.Unlock()
 	case n > 0:
 		a.errReview.mu.Lock()
 		a.errReview.lastError = ""
 		a.errReview.mu.Unlock()
 		log.Printf("error review: judged %d group(s)", n)
 	}
-}
-
-func (a *api) pauseErrReview(err error) {
-	log.Printf("error review: %v", err)
-	a.errReview.mu.Lock()
-	a.errReview.pauseTill, a.errReview.lastError = time.Now().Add(reviewBackoff), err.Error()
-	a.errReview.mu.Unlock()
-	a.notify(EventReviewPaused, "paused|errors", 6*time.Hour, notifyMsg{Title: "Error review paused for 10 minutes",
-		Lines: []string{truncate(err.Error(), 300)}, Path: "#/errors"})
 }
 
 // errorReview serves the review's config and state. POST takes

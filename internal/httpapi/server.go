@@ -48,8 +48,7 @@ type api struct {
 	arena arenaState
 	// review is the drift review.
 	review reviewState
-	// notes throttles alerts; errReview is the error review's state.
-	notes     notifier
+	// errReview is the error review's state.
 	errReview reviewState
 	// login caps failed sign-in attempts so the TOTP code cannot be brute forced.
 	login *loginGuard
@@ -121,18 +120,12 @@ func newServer(s *store.Store, baseOverride map[string]string, authCfg *auth.Con
 	mux.HandleFunc("POST /api/drift/seed", a.requireAdmin(a.driftSeed))
 	for _, pre := range []string{"", "/api"} {
 		// read: the dashboard session, or any machine token. write: the session
-		// or the master token only, so a shared inference key cannot redirect an
-		// alert channel or trigger a review. The channel list is a write-level
-		// read: a webhook url IS the credential for Slack, Discord and ntfy.
+		// or the master token only, so a shared inference key cannot trigger a
+		// review.
 		read, write := a.requireSession, a.requireSession
 		if pre != "" {
 			read, write = a.requireToken, a.requireAdmin
 		}
-		mux.HandleFunc("GET "+pre+"/notify", write(a.notifyInfo))
-		mux.HandleFunc("POST "+pre+"/notify/channels", write(a.putChannel))
-		mux.HandleFunc("PUT "+pre+"/notify/channels/{id}", write(a.putChannel))
-		mux.HandleFunc("DELETE "+pre+"/notify/channels/{id}", write(a.deleteChannel))
-		mux.HandleFunc("POST "+pre+"/notify/channels/{id}/test", write(a.testChannel))
 		mux.HandleFunc("GET "+pre+"/errors/review", read(a.errorReview))
 		mux.HandleFunc("POST "+pre+"/errors/review", write(a.errorReview))
 		mux.HandleFunc("GET "+pre+"/errors/verdicts", read(a.errorVerdicts))

@@ -69,8 +69,7 @@ var mcpAdminTools = map[string]bool{
 	"put_provider_def": true, "delete_provider_def": true,
 	"add_filter": true, "update_filter": true, "delete_filter": true,
 	"ack_drift_changes": true, "drift_review": true, "error_review": true,
-	"put_notify_channel": true, "test_notify_channel": true, "delete_notify_channel": true,
-	"list_notify_channels": true, "get_error": true,
+	"get_error": true,
 }
 
 // mcpMask hides what a tool must not show a caller that is not admin. The
@@ -338,27 +337,6 @@ var mcpTools = []mcpTool{
 		InputSchema: schema(map[string]any{}),
 		run: func(a *api, args map[string]any) (any, error) {
 			return callHandler(a.errorVerdicts, http.MethodGet, nil, nil)
-		}},
-	{Name: "list_notify_channels", Description: "The alert channels (secrets masked), the channel types with their fields, and the events a channel can take.",
-		InputSchema: schema(map[string]any{}),
-		run: func(a *api, args map[string]any) (any, error) {
-			return callHandler(a.notifyInfo, http.MethodGet, nil, nil)
-		}},
-	{Name: "put_notify_channel", Description: "Create an alert channel, or replace one with its id. type is telegram (config botToken, chatId, threadId for a forum topic, link) or webhook (config url, secret, link). events: the events it takes, empty for all. A secret left empty keeps the stored one.",
-		InputSchema: schema(map[string]any{"id": pString, "name": pString, "type": pString, "enabled": pBool,
-			"events": map[string]any{"type": "array", "items": pString}, "config": map[string]any{"type": "object"}}, "type"),
-		run: func(a *api, args map[string]any) (any, error) {
-			return callHandler(a.putChannel, http.MethodPost, map[string]string{"id": argStr(args, "id")}, args)
-		}},
-	{Name: "test_notify_channel", Description: "Send a test alert to one channel.",
-		InputSchema: schema(map[string]any{"id": pString}, "id"),
-		run: func(a *api, args map[string]any) (any, error) {
-			return callHandler(a.testChannel, http.MethodPost, map[string]string{"id": argStr(args, "id")}, nil)
-		}},
-	{Name: "delete_notify_channel", Description: "Delete an alert channel.",
-		InputSchema: schema(map[string]any{"id": pString}, "id"),
-		run: func(a *api, args map[string]any) (any, error) {
-			return callHandler(a.deleteChannel, http.MethodDelete, map[string]string{"id": argStr(args, "id")}, nil)
 		}},
 	{Name: "drift_review", Description: "The drift review: a System One decision model (such as typesafe/jev-latest) judges each structure change's cause and acknowledges the benign ones it is sure of; a resolver chat model (such as antigravity/gemini-3.8-flash), when set, settles every other change on its own: acknowledge, or blacklist a request field a provider refuses. Without arguments, its state. enabled needs a decisionModel. run judges the waiting changes now.",
 		InputSchema: schema(map[string]any{"enabled": pBool, "decisionModel": pString, "resolverModel": pString, "ackConfidence": map[string]any{"type": "number"}, "run": pBool}),

@@ -428,7 +428,6 @@ func TestDriftReviewRunsOneAtATime(t *testing.T) {
 			"cause": map[string]any{"type": "choice", "choice": CauseDataNoise, "confidence": 0.9, "probabilities": map[string]float64{}}}})
 	}))
 	defer jev.Close()
-	alerts := alertsServer(t)
 	s, _ := store.Open(filepath.Join(t.TempDir(), "t.db"))
 	defer s.Close()
 	s.CreateConnection("typesafe", "jev", "k")
@@ -459,11 +458,6 @@ func TestDriftReviewRunsOneAtATime(t *testing.T) {
 	}
 	if !paused.IsZero() || lastErr != "" {
 		t.Errorf("pauseTill = %v lastError = %q, want the busy pass ignored", paused, lastErr)
-	}
-	for _, m := range alerts() {
-		if strings.Contains(m, "paused") {
-			t.Errorf("a busy pass alerted: %q", m)
-		}
 	}
 	mu.Lock()
 	got := calls

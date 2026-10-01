@@ -159,8 +159,7 @@ func TestRefreshOutlivesACancelledCaller(t *testing.T) {
 }
 
 // The exchange succeeds and the write fails. The new token is the only one the
-// provider accepts, so the caller must get it, and the operator must hear that
-// it was not saved. T1-5 (b).
+// provider accepts, so the caller must get it. T1-5 (b).
 func TestRefreshReturnsTheNewTokenWhenTheStoreFails(t *testing.T) {
 	cases := []struct {
 		name string
@@ -176,15 +175,6 @@ func TestRefreshReturnsTheNewTokenWhenTheStoreFails(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			allowDial(t)
-			alerts := make(chan notifyMsg, 4)
-			sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				var m notifyMsg
-				json.NewDecoder(r.Body).Decode(&m)
-				alerts <- m
-			}))
-			defer sink.Close()
-
 			s, _ := store.Open(filepath.Join(t.TempDir(), "t.db"))
 			defer s.Close()
 			c, _ := s.CreateConnection("claude", "P", "stale-token")
@@ -198,26 +188,11 @@ func TestRefreshReturnsTheNewTokenWhenTheStoreFails(t *testing.T) {
 			defer tokenSrv.Close()
 			s.SetOAuth(c.ID, store.OAuthCreds{RefreshToken: "rt-0", TokenURL: tokenSrv.URL, ClientID: "cid",
 				ExpiresAt: time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)})
-			if _, err := s.SaveNotifyChannel(store.NotifyChannel{Name: "hook", Type: "webhook", Enabled: true,
-				Config: map[string]string{"url": loopbackName(t, sink.URL)}}); err != nil {
-				t.Fatalf("save channel: %v", err)
-			}
 			a, _ := newServer(s, nil, nil)
 
 			tok, ok := tc.call(a, c.ID)
 			if tok != "fresh-token" || !ok {
 				t.Fatalf("%s = %q, ok=%v; want fresh-token and no failure", tc.name, tok, ok)
-			}
-			m := waitFor(t, alerts, "the alert about the unsaved token")
-			text := m.Title + " " + strings.Join(m.Lines, " ")
-			if m.Event != EventAccountAuth {
-				t.Errorf("event = %q, want %q", m.Event, EventAccountAuth)
-			}
-			if !strings.Contains(text, c.ID) {
-				t.Errorf("alert %q does not name connection %s", text, c.ID)
-			}
-			if !strings.Contains(text, "not saved") {
-				t.Errorf("alert %q does not say the new token was not saved", text)
 			}
 		})
 	}
