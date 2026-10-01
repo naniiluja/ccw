@@ -1,11 +1,13 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"sort"
 
 	"github.com/naniiluja/ccw/internal/store"
+	"github.com/naniiluja/ccw/internal/translate"
 )
 
 // Rotation is how a provider's accounts take turns:
@@ -195,4 +197,38 @@ func (a *api) setRotation(w http.ResponseWriter, r *http.Request) {
 	delete(a.rrNext, "p:"+prov)
 	a.rrMu.Unlock()
 	writeJSON(w, a.rotationState(prov))
+}
+
+// attempt is one try of a request: an account, and the upstream model when
+// ccw picks it ("" keeps the request's own).
+type attempt struct {
+	conn  store.Connection
+	model string
+}
+
+// attemptsFor orders the tries of a request: every account in rotation
+// order; then, for a level variant that every account refused as busy, every
+// account again on the model's default variant (a -high is refused for
+// capacity far more often than the -tiered one).
+func (a *api) attemptsFor(ctx context.Context, targets []store.Connection, start int, body []byte) []attempt {
+	model, _ := bodyModel(body)
+	out := make([]attempt, 0, len(targets))
+	var fallback []attempt
+	for i := range targets {
+		c := targets[(start+i)%len(targets)]
+		p, ok := a.providerFor(c)
+		if !ok || p.API != translate.Antigravity {
+			out = append(out, attempt{conn: c})
+			continue
+		}
+		a.catalogIDs(ctx, c.Provider) // the variants come with the list
+		picked := a.resolveVariant(c.Provider, model, body)
+		out = append(out, attempt{conn: c, model: picked})
+		if g, ok := a.variants(c.Provider)[a.variantBase(c.Provider, picked)]; ok {
+			if def := g.ids[g.def]; def != "" && def != picked {
+				fallback = append(fallback, attempt{conn: c, model: def})
+			}
+		}
+	}
+	return append(out, fallback...)
 }
