@@ -36,4 +36,4 @@ Một module Go (`github.com/naniiluja/ccw`), 14 package, 72 file `.go` không t
 @.claude/rules/git-workflow.md
 
 ## Current plan
-See `.claude/plan/PLAN.md` for the backlog of the CURRENT iteration. Run it with `/ccf:cook`, which executes independent tasks in parallel waves (one worktree-isolated agent per task) and starts a task only after every task in its `Depends on` is merged + tested; a single task can also be implemented directly in the session. Closed iterations move to `.claude/plan/ARCHIVE.md` (task files to `.claude/plan/archive/`), so keep this section about the work in flight, not a running history. Archive it, never delete it.
+Không có iteration nào đang chạy: `.claude/plan/PLAN.md` trống và iteration tinh gọn ccw (19 task, 001 và 014 đến 031) đã `done`, lưu ở `.claude/plan/ARCHIVE.md` (task file ở `.claude/plan/archive/`). Việc còn mở sau `/ccf:check` (đều là `WARN:`, chưa thành task): `internal/httpapi/proxy.go` bỏ qua lỗi của `copyFlushing` mà không log; `-reset-password` chưa thu hồi session đang sống; comment cũ ở `internal/auth/config.go`. Kế hoạch mới đi qua `/ccf:plan`, chạy bằng `/ccf:cook`. Archive iteration đã đóng, không xóa.

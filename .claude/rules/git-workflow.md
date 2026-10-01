@@ -6,7 +6,7 @@
 ## Commit attribution (harness ép)
 - Attribution do `.claude/settings.json` `attribution` (`{ "commit": "...", "pr": "..." }`) ép, theo `code.claude.com/docs/en/settings`. Setting của harness là tất định và **thắng** văn bản ở đây. (`attribution` thay cho `includeCoAuthoredBy` đã bỏ.)
 - Luật này chỉ là **dự phòng**: trailer viết tay phải khớp `settings.json`; nếu `attribution.commit` là `""` thì KHÔNG thêm tay.
-- Giá trị hiện tại: `commit` là `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>` (42 trên 60 commit của lịch sử mới có trailer này), `pr` là `""` vì chưa có PR nào.
+- Giá trị hiện tại: `commit` là `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>` (đếm bằng `git log --grep='Co-Authored-By: Claude' --oneline | wc -l`), `pr` là `""` vì chưa có PR nào.
 
 ## When asked to commit
 - Nhánh mặc định là `master` (nhánh duy nhất, remote `origin` trỏ `github.com/naniiluja/ccw`). Lịch sử bắt đầu lại ở commit `52bec36` (`Start ccw: the intact credential proxy under its new name`). Khi người dùng yêu cầu commit thì làm trên `master` trừ khi họ muốn nhánh riêng.
