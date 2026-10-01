@@ -2,7 +2,6 @@ package store
 
 import (
 	"fmt"
-	"strings"
 	"time"
 )
 
@@ -37,15 +36,6 @@ CREATE TABLE IF NOT EXISTS provider_models (
 	test_msg   TEXT NOT NULL DEFAULT '',
 	PRIMARY KEY (provider, model)
 );`
-
-// migrateModels adds the columns newer than the table.
-func (s *Store) migrateModels() error {
-	if _, err := s.DB.Exec(`ALTER TABLE provider_models ADD COLUMN test_conn TEXT NOT NULL DEFAULT ''`); err != nil &&
-		!strings.Contains(err.Error(), "duplicate column") {
-		return fmt.Errorf("add column test_conn: %w", err)
-	}
-	return nil
-}
 
 // SyncModels records the models a provider listed and returns the ones seen
 // for the first time. A new model starts on when startOn says so. With live

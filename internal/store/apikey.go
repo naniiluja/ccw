@@ -77,43 +77,6 @@ func mask(k string) string {
 	return k[:10] + "••••••••" + k[len(k)-4:]
 }
 
-func (s *Store) migrateAPIKeys() error {
-	rows, err := s.DB.Query(`PRAGMA table_info(api_keys)`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	have := map[string]bool{}
-	for rows.Next() {
-		var cid int
-		var name, ctype string
-		var notnull, pk int
-		var dflt any
-		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
-			return err
-		}
-		have[name] = true
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	rows.Close()
-	for _, col := range []struct{ name, def string }{
-		{"models", "TEXT NOT NULL DEFAULT ''"},
-		{"expires_at", "TEXT NOT NULL DEFAULT ''"},
-		{"rpm", "INTEGER NOT NULL DEFAULT 0"},
-		{"last_used", "TEXT NOT NULL DEFAULT ''"},
-	} {
-		if have[col.name] {
-			continue
-		}
-		if _, err := s.DB.Exec(`ALTER TABLE api_keys ADD COLUMN ` + col.name + ` ` + col.def); err != nil {
-			return fmt.Errorf("alter api_keys add %s: %w", col.name, err)
-		}
-	}
-	return nil
-}
-
 // encodeModels stores a model list; an empty list is stored as "" (every model).
 func encodeModels(models []string) string {
 	seen := map[string]bool{}

@@ -39,6 +39,8 @@ func oldShapeFields(t *testing.T, s *store.Store, key string) {
 		`CREATE TABLE shape_fields (key TEXT NOT NULL, path TEXT NOT NULL, type TEXT NOT NULL,
 			seen INTEGER NOT NULL DEFAULT 0, first_obs INTEGER NOT NULL, last_obs INTEGER NOT NULL,
 			gone INTEGER NOT NULL DEFAULT 0, last_at TEXT NOT NULL DEFAULT '', PRIMARY KEY (key, path))`,
+		// A database the old code wrote predates the schema version.
+		`PRAGMA user_version = 0`,
 	} {
 		if _, err := s.DB.Exec(q); err != nil {
 			t.Fatalf("old table: %v", err)
