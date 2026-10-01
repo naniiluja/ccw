@@ -13,7 +13,7 @@ Dashboard là SPA React trong `fe/`, build ra `fe/dist`, được `scripts/ui-bu
 - Component và kiểu `PascalCase`, hàm và biến `camelCase`, hook bắt đầu bằng `use`. `[review]`
 - Mỗi trang ở `fe/src/pages/<trang>/index.tsx` kèm các tệp con cùng thư mục; gọi API ở `fe/src/api/` (hook TanStack Query), không `fetch` trực tiếp trong component. `[review]` `grep -rnE '(^|[^A-Za-z.])fetch\(' fe/src --include='*.ts' --include='*.tsx' | grep -v '^fe/src/api/'` phải rỗng.
 - Alias `@/` trỏ tới `fe/src`. Test đặt cạnh tệp (`*.test.ts(x)`). `[tool]` `pnpm -C fe typecheck`.
-- Kiểu dữ liệu từ API và form kiểm bằng zod; không `any`. `[tool]` `pnpm -C fe lint` (oxlint `--deny-warnings`) và `pnpm -C fe typecheck`.
+- Form kiểm đầu vào bằng zod (mọi form có ràng buộc: giới hạn khóa, xoay vòng, bộ lọc); phản hồi API dùng kiểu TypeScript khai báo ở `fe/src/api/` vì hợp đồng do cùng repo giữ, không kiểm lúc chạy; không `any`. `[tool]` `pnpm -C fe lint` (oxlint `--deny-warnings`) và `pnpm -C fe typecheck`.
 
 ## Ngôn ngữ giao diện
 - Chữ hiển thị cho người dùng viết **tiếng Việt**, không dùng i18n: không thư viện dịch, không khóa ngôn ngữ. Chuỗi của mỗi trang gom ở `strings.ts` cạnh trang (vd `fe/src/pages/keys/strings.ts`). Comment trong code viết tiếng Anh như phía Go. `[review]`
