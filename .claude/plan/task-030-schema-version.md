@@ -22,6 +22,8 @@
 - `TestFailedMigrationKeepsTheOldVersion`: ép một migration lỗi, kiểm tra `user_version` giữ nguyên và DB vẫn mở lại được ở phiên bản cũ.
 
 ## Files to touch
+- internal/drift/names_test.go — helper `oldShapeFields` đặt lại `user_version = 0` để giả lập DB cũ (test buộc)
+- internal/store/models.go, errors.go, drift.go, oauth.go — chuyển migration rải rác vào danh sách đánh số
 - `internal/store/store.go` — danh sách migration đánh số, chạy theo `user_version`, mỗi bước trong transaction.
 - `internal/store/models.go`, `errors.go`, `drift.go`, `oauth.go`, `apikey.go` — chuyển các `ALTER TABLE` nằm rải rác vào danh sách migration.
 - Không còn `internal/store/contract.go`: file đó (cùng `MigrateContract`) bị xóa ở task 014, nên task này chạy sau 014.
