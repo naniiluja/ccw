@@ -3,7 +3,8 @@
 # gofmt, go vet, staticcheck (be/staticcheck.conf), gocyclo, and go test -race,
 # which also runs the architecture and file size tests in
 # be/internal/httpapi/arch_test.go. The Go gates run inside be/, where the
-# module lives; the frontend gates run only once fe/package.json exists.
+# module lives; the frontend gates (pnpm install, lint, typecheck, test, build)
+# run inside fe/ once fe/package.json exists.
 # Every gate runs; the script names each one that failed and exits non-zero
 # if any did.
 #
@@ -77,8 +78,17 @@ gate "staticcheck $STATICCHECK_VERSION" staticcheckClean
 gate "gocyclo -over $MAX_CYCLOMATIC" gocycloClean
 gate "go test -race (incl. architecture and size tests)" go test -race ./...
 
+# The frontend gates run inside fe/ and report failures the same way. pnpm
+# comes from the packageManager field of fe/package.json (corepack or
+# pnpm/action-setup in CI).
 if [ -f "$root/fe/package.json" ]; then
 	echo "Frontend gates (fe/)"
+	cd "$root/fe" || exit 1
+	gate "pnpm install --frozen-lockfile" pnpm install --frozen-lockfile
+	gate "pnpm lint" pnpm lint
+	gate "pnpm typecheck" pnpm typecheck
+	gate "pnpm test" pnpm test
+	gate "pnpm build" pnpm build
 else
 	echo "Frontend gates skipped: fe/package.json does not exist yet."
 fi
