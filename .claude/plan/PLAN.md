@@ -23,7 +23,7 @@ Ba task không có liên kết dữ liệu và không chung file, nên `/ccf:coo
 ## Task backlog (in execution order)
 | # | Slice | Layers | Gate (tests green) | Depends on | Status |
 |---|-------|--------|--------------------|-----------|--------|
-| 001 | CI chạy `go vet` và `go test -race` trước khi publish | CI workflow | `go vet ./...` và `go test ./...` xanh trên máy, workflow đọc đúng trình tự bằng test đọc YAML | — | todo |
+| 001 | CI chạy `go vet` và `go test -race` trước khi publish | CI workflow | `go vet ./...` và `go test ./...` xanh trên máy, workflow đọc đúng trình tự bằng test đọc YAML | — | in-review |
 
 Hai task còn lại của đợt onboarding (đánh số lại thành 030 và 031) nằm cuối bảng bên dưới, vì chúng phải chạy sau các task xóa, gộp và tách.
 
@@ -34,7 +34,7 @@ Nguồn: `/Users/naniiluja/.claude/plans/optimized-giggling-gizmo.md`. Mục ti�
 ## Task backlog: tinh gọn source (in execution order)
 | # | Slice | Layers | Gate (tests green) | Depends on | Status |
 |---|-------|--------|--------------------|-----------|--------|
-| 014 | Xóa contract lab và mọi thứ liên quan đến switcher (kèm cờ `trusted` của API key) | store + contract + httpapi + cmd + docs | `grep` switcher và contract lab rỗng; test hiện có xanh | — | todo |
+| 014 | Xóa contract lab và mọi thứ liên quan đến switcher (kèm cờ `trusted` của API key) | store + contract + httpapi + cmd + docs | `grep` switcher và contract lab rỗng; test hiện có xanh | — | in-review |
 | 015 | Xóa notify (Telegram, webhook) | store + httpapi | `grep` telegram và webhook rỗng; test review và OAuth xanh | 014 | todo |
 | 016 | Xóa ranking (bảng xếp hạng model) | httpapi | `grep` arena và ranking rỗng; `/v1/models` đủ trường cũ | 015 | todo |
 | 017 | Dọn code chết và lint (`provider.Generic`, `zen.SystemOneNames`, hai cảnh báo test) | provider + zen + httpapi | `staticcheck` xanh, `deadcode` rỗng | 014 | todo |
