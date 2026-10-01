@@ -35,3 +35,4 @@ Ma trận contract: gate bật (không token, token sai, token đúng, session) 
 - Hợp đồng JSON này là nguồn sự thật cho task 045 (FE): đổi tên trường ở đây thì phải đổi ở đó.
 - Đọc cấu hình bằng hàm đã có, không thêm biến global mới (`coding-conventions.md`). Nếu một giá trị chỉ tính được trong lúc xử lý request (ví dụ múi giờ), gọi đúng helper hiện có.
 - Chạm `server.go` cùng 033 và 034, nên chạy khác wave.
+- Phạm vi mở rộng có chủ ý: `be/internal/websearch/websearch.go` thêm `DefaultCount` và `Config.EffectiveCount()` để `settings.go` dùng chung logic kẹp số kết quả với searcher thật (tiêu chí "không đọc env lần hai theo cách khác"); hành vi của `New` không đổi. Hai test `keys_test.go` và `accounts_crud_test.go` chỉ đổi mong đợi `Location` sang `/ui/login` theo task 034.

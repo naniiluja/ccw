@@ -1,3 +1,4 @@
+import { Progress } from '@/components/ui/progress'
 import type { ErrorGroup } from '@/api/errors'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -42,12 +43,11 @@ function BarList({ label, bars }: { label: string; bars: Bar[] }) {
           <span className="truncate" title={b.label}>
             {b.label}
           </span>
-          <span className="h-2 rounded-full bg-muted" aria-hidden="true">
-            <span
-              className="block h-full rounded-full bg-primary"
-              style={{ width: `${Math.max(4, (b.value / max) * 100)}%` }}
-            />
-          </span>
+          <Progress
+            value={Math.max(4, (b.value / max) * 100)}
+            aria-label={`${b.label}: ${b.value}`}
+            className="h-2"
+          />
           <span className="tabular-nums text-muted-foreground">{b.value}</span>
         </li>
       ))}

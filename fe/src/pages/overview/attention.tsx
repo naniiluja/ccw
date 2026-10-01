@@ -75,7 +75,7 @@ export function LowQuotaPanel({ source }: { source: Source<LowQuota[]> }) {
       empty="Không có tài khoản nào gần hết quota."
       render={(q, i) => (
         <li key={q.account.connectionId}>
-          <Link to="/quota" data-testid={`low-quota-item-${i}`} className={itemClass}>
+          <Link to={`/quota#account-${q.account.connectionId}`} data-testid={`low-quota-item-${i}`} className={itemClass}>
             <span className="flex items-center justify-between gap-2">
               <span className="truncate font-medium">{q.account.label}</span>
               <Badge variant={q.usedPct >= 90 ? 'destructive' : 'secondary'}>
@@ -127,7 +127,7 @@ export function LatestDriftPanel({ source }: { source: Source<DriftChange[]> }) 
       empty="Không có thay đổi drift nào chưa xác nhận."
       render={(c) => (
         <li key={c.id}>
-          <Link to="/drift?unacked=1" className={itemClass}>
+          <Link to={`/drift?unacked=1&change=${c.id}`} className={itemClass}>
             <span className="flex items-center justify-between gap-2">
               <span className="truncate font-mono text-sm font-medium">{c.path}</span>
               <Badge variant="secondary">{c.kind}</Badge>

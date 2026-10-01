@@ -5,7 +5,8 @@ import {
   TableIcon,
   TriangleAlertIcon,
 } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { useLocation } from 'react-router'
 import { toast } from 'sonner'
 import {
   type QuotaView,
@@ -90,6 +91,13 @@ export default function QuotaPage() {
     })
 
   const accounts = quota.data ?? []
+  // A link such as /quota#account-<id> scrolls to that account once it renders.
+  const { hash } = useLocation()
+  useEffect(() => {
+    if (hash && accounts.length > 0) {
+      document.getElementById(hash.slice(1))?.scrollIntoView?.({ block: 'center' })
+    }
+  }, [hash, accounts.length, view])
   let body
   if (quota.isPending) body = <Loading />
   else if (quota.isError && !quota.data) {

@@ -35,6 +35,8 @@ export function QuotaCards({ accounts, onNotice }: ViewProps) {
       {accounts.map((a) => (
         <Card
           key={a.connectionId}
+          id={`account-${a.connectionId}`}
+          className="scroll-mt-20"
           role="article"
           aria-label={`${a.provider} ${a.label}`}
           size="sm"
@@ -84,7 +86,7 @@ export function QuotaTable({ accounts, onNotice }: ViewProps) {
         </TableHeader>
         <TableBody>
           {accounts.map((a) => (
-            <TableRow key={a.connectionId} className="align-top">
+            <TableRow key={a.connectionId} id={`account-${a.connectionId}`} className="scroll-mt-20 align-top">
               <TableCell className="font-medium">{a.label}</TableCell>
               <TableCell>{a.provider}</TableCell>
               <TableCell>{a.plan ?? '—'}</TableCell>

@@ -152,6 +152,17 @@ describe('Drift page', () => {
     expect(router.state.location.search).toContain('direction=request')
   })
 
+  it('opens the sheet of the change named by ?change= and drops the param on close', async () => {
+    useSession()
+    mockDrift()
+    const user = userEvent.setup()
+    const { router } = renderApp('/drift?change=1')
+    const sheet = await screen.findByRole('dialog')
+    expect(within(sheet).getByText('number')).toBeInTheDocument()
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(router.state.location.search).not.toContain('change='))
+  })
+
   it('opens the old and new diff and the sample in a sheet', async () => {
     useSession()
     mockDrift()

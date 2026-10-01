@@ -164,6 +164,8 @@ describe('overview page', () => {
     expect(all).toContain('/accounts')
     expect(all).toContain('/quota')
     expect(all).toContain('/drift?unacked=1')
+    expect(all.some((h) => h.startsWith('/drift?unacked=1&change='))).toBe(true)
+    expect(all.some((h) => h.startsWith('/quota#account-'))).toBe(true)
     expect(all).toContain('/errors?error=12')
     expect(all.some((h) => h.startsWith('/errors?since='))).toBe(true)
   })

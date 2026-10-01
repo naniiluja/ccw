@@ -34,3 +34,4 @@ MSW theo hình dạng thật từ `be/internal/httpapi/errlog.go`, `errreview.go
 ## Notes / best-practice sources
 - Task 044 (tổng quan) import hook `useErrorStats` và `useErrors` từ `fe/src/api/errors.ts`; giữ tên ổn định.
 - Không sửa tệp dùng chung của task 036.
+- Quyết định khi đóng task: tiêu chí "số lần thử" của chi tiết lỗi được bỏ. `upstream_errors` ghi mỗi lần thử thành một dòng riêng và JSON không có trường attempt, nên không có số để hiển thị; các lần thử của cùng một request hiện ra thành các dòng liền kề trong danh sách.

@@ -1,5 +1,6 @@
 import { CheckCheckIcon, CheckIcon, EyeIcon, TriangleAlertIcon } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router'
 import { toast } from 'sonner'
 import {
   useAckChanges,
@@ -89,7 +90,9 @@ export function ChangesTab({ filters }: { filters: Filters }) {
   const query = useDriftChanges(filter)
   const ack = useAckChanges()
   const [selected, setSelected] = useState<Set<number>>(new Set())
-  const [detail, setDetail] = useState<DriftChange | null>(null)
+  const [detailId, setDetailId] = useState<number | null>(
+    Number(useSearchParams()[0].get('change')) || null,
+  )
   const [providerText, setProviderText] = useState(filter.provider)
 
   // The provider box is typed into freely; the URL follows after a pause.
@@ -100,6 +103,12 @@ export function ChangesTab({ filters }: { filters: Filters }) {
   }, [providerText, filter.provider, update])
 
   const changes = query.data?.changes ?? []
+  // A link such as /drift?change=12 opens that change's sheet once it is listed.
+  const detail = changes.find((c) => c.id === detailId) ?? null
+  const closeDetail = () => {
+    setDetailId(null)
+    update({ change: null })
+  }
   const pending = changes.filter((c) => !c.acked)
   const picked = pending.filter((c) => selected.has(c.id)).map((c) => c.id)
 
@@ -107,7 +116,7 @@ export function ChangesTab({ filters }: { filters: Filters }) {
     ack.mutate(ids, {
       onSuccess: () => {
         setSelected(new Set())
-        setDetail(null)
+        setDetailId(null)
       },
       onError: (e) =>
         toast.error('Không xác nhận được thay đổi', { description: e.message }),
@@ -295,7 +304,7 @@ export function ChangesTab({ filters }: { filters: Filters }) {
                           variant="ghost"
                           size="icon-sm"
                           aria-label={`Xem chi tiết ${c.path}`}
-                          onClick={() => setDetail(c)}
+                          onClick={() => setDetailId(c.id)}
                         >
                           <EyeIcon aria-hidden="true" />
                         </Button>
@@ -325,7 +334,7 @@ export function ChangesTab({ filters }: { filters: Filters }) {
 
       <ChangeSheet
         change={detail}
-        onClose={() => setDetail(null)}
+        onClose={closeDetail}
         onAck={(id) => doAck([id])}
       />
     </div>
