@@ -81,36 +81,86 @@ type callerModelKey struct{}
 
 // v1 forwards a request to the accounts that serve the model named in its body.
 func (a *api) v1(w http.ResponseWriter, r *http.Request) {
+	req, refusal := parseV1Model(w, r)
+	if refusal != nil {
+		refusal.write(w)
+		return
+	}
+	targets, refusal := a.selectTargets(r, &req)
+	if refusal != nil {
+		refusal.write(w)
+		return
+	}
+	// The client's own request, before ccw changes anything, is what shows
+	// a tool adding or dropping a field.
+	if watched(targets[0].Provider) {
+		a.drift.ObserveFrom(drift.Request, targets[0].Provider, clientOf(r), r.PathValue("path"), req.original, false)
+	}
+	if r.PathValue("path") == "messages/count_tokens" && !a.anyAnthropic(targets) {
+		countTokensEstimate(w, req.body)
+		return
+	}
+	targets, start := a.startFor(req.model, targets)
+	a.failover(w, r.WithContext(context.WithValue(r.Context(), callerModelKey{}, req.model)), req.body, targets, start)
+}
+
+// v1Request is a /v1 call once its model is read: the body to send, the body
+// as the client sent it, and the model it names, prefix included.
+type v1Request struct {
+	body, original []byte
+	model          string
+}
+
+// v1Refusal is a /v1 call ccw refuses before any account is tried. api picks
+// the caller's envelope with code and param over the plain error, and allow is
+// the Allow header a wrong method gets.
+type v1Refusal struct {
+	status           int
+	code, param, msg string
+	api              bool
+	allow            string
+}
+
+// write answers the caller with the refusal.
+func (e *v1Refusal) write(w http.ResponseWriter) {
+	if e.allow != "" {
+		w.Header().Set("Allow", e.allow)
+	}
+	if e.api {
+		writeAPIError(w, e.status, e.code, e.param, e.msg)
+		return
+	}
+	writeError(w, e.status, e.msg)
+}
+
+// parseV1Model reads a /v1 body and the model it names, refusing a call that
+// names none, names it twice, or is a Messages call without a valid max_tokens.
+func parseV1Model(w http.ResponseWriter, r *http.Request) (v1Request, *v1Refusal) {
 	// The OpenAI Responses API is not served to callers: only chat completions
 	// and messages are. Responses stays an upstream shape for some providers.
 	if strings.Trim(r.PathValue("path"), "/") == "responses" {
-		writeError(w, http.StatusNotFound, "Unknown request URL: "+r.Method+" "+r.URL.Path)
-		return
+		return v1Request{}, &v1Refusal{status: http.StatusNotFound, msg: "Unknown request URL: " + r.Method + " " + r.URL.Path}
 	}
 	body, status, err := readBody(w, r)
 	if err != nil {
-		writeError(w, status, err.Error())
-		return
+		return v1Request{}, &v1Refusal{status: status, msg: err.Error()}
 	}
 	// Only the first "model" is read here, while the provider may read the
 	// last one, so the id ccw checks would not be the id that runs.
 	if topLevelCount(body, "model") > 1 {
-		writeError(w, http.StatusBadRequest, "the request names \"model\" more than once")
-		return
+		return v1Request{}, &v1Refusal{status: http.StatusBadRequest, msg: "the request names \"model\" more than once"}
 	}
-	original := body
+	req := v1Request{body: body, original: body}
 	model, ok := bodyModel(body)
 	if !ok || model == "" {
 		switch {
 		case clientShape(r.PathValue("path")) != "" && r.Method != http.MethodPost:
-			w.Header().Set("Allow", http.MethodPost)
-			writeError(w, http.StatusMethodNotAllowed, "Method "+r.Method+" is not allowed on "+r.URL.Path+"; use POST")
+			return req, &v1Refusal{status: http.StatusMethodNotAllowed, allow: http.MethodPost, msg: "Method " + r.Method + " is not allowed on " + r.URL.Path + "; use POST"}
 		case len(bytes.TrimSpace(body)) == 0 && r.Method != http.MethodPost:
-			writeError(w, http.StatusNotFound, "Unknown request URL: "+r.Method+" "+r.URL.Path)
+			return req, &v1Refusal{status: http.StatusNotFound, msg: "Unknown request URL: " + r.Method + " " + r.URL.Path}
 		default:
-			writeAPIError(w, http.StatusBadRequest, "", "model", "the request names no model; send \"model\": \"<provider>/<model>\" or a model id")
+			return req, &v1Refusal{status: http.StatusBadRequest, api: true, param: "model", msg: "the request names no model; send \"model\": \"<provider>/<model>\" or a model id"}
 		}
-		return
 	}
 	// Claude Code marks a model it has a 1M window for with a [1m] suffix, which
 	// is a note to the tool and no part of the model's name.
@@ -119,19 +169,25 @@ func (a *api) v1(w http.ResponseWriter, r *http.Request) {
 			body, model = renamed, base
 		}
 	}
+	req.body, req.model = body, model
 	if r.PathValue("path") == "messages" {
 		if msg := checkMaxTokens(body); msg != "" {
-			writeAPIError(w, http.StatusBadRequest, "", "max_tokens", msg)
-			return
+			return req, &v1Refusal{status: http.StatusBadRequest, api: true, param: "max_tokens", msg: msg}
 		}
 	}
+	return req, nil
+}
+
+// selectTargets finds the accounts that may serve a request's model for this
+// caller. A model that names its provider has the prefix stripped from the
+// body, which selectTargets rewrites in req.
+func (a *api) selectTargets(r *http.Request, req *v1Request) ([]store.Connection, *v1Refusal) {
+	model := req.model
 	prov, upstreamModel := a.splitModel(model)
 	caller := principalOf(r)
 	if !caller.allowsModel(prov, upstreamModel, model) {
-		writeError(w, http.StatusForbidden, "model is not permitted for this api key")
-		return
+		return nil, &v1Refusal{status: http.StatusForbidden, msg: "model is not permitted for this api key"}
 	}
-
 	var targets []store.Connection
 	if prov != "" {
 		// Check the off switch against the model and its variant base. Using
@@ -140,14 +196,13 @@ func (a *api) v1(w http.ResponseWriter, r *http.Request) {
 		off := a.store.InactiveModels(prov)
 		vbase, _ := splitVariant(upstreamModel)
 		if (off[upstreamModel] || off[vbase]) && r.Context().Value(modelTestKey{}) == nil {
-			writeError(w, http.StatusForbidden, "this model is switched off in ccw")
-			return
+			return nil, &v1Refusal{status: http.StatusForbidden, msg: "this model is switched off in ccw"}
 		}
 		targets = a.activeConnections(prov)
 		if upstreamModel != model {
-			if body, ok = setModel(body, upstreamModel); !ok {
-				writeError(w, http.StatusBadRequest, "cannot rewrite the model")
-				return
+			var ok bool
+			if req.body, ok = setModel(req.body, upstreamModel); !ok {
+				return nil, &v1Refusal{status: http.StatusBadRequest, msg: "cannot rewrite the model"}
 			}
 		}
 	} else {
@@ -169,20 +224,9 @@ func (a *api) v1(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(targets) == 0 {
-		writeAPIError(w, http.StatusNotFound, "model_not_found", "model", "no active account serves this model")
-		return
+		return nil, &v1Refusal{status: http.StatusNotFound, api: true, code: "model_not_found", param: "model", msg: "no active account serves this model"}
 	}
-	// The client's own request, before ccw changes anything, is what shows
-	// a tool adding or dropping a field.
-	if watched(targets[0].Provider) {
-		a.drift.ObserveFrom(drift.Request, targets[0].Provider, clientOf(r), r.PathValue("path"), original, false)
-	}
-	if r.PathValue("path") == "messages/count_tokens" && !a.anyAnthropic(targets) {
-		countTokensEstimate(w, body)
-		return
-	}
-	targets, start := a.startFor(model, targets)
-	a.failover(w, r.WithContext(context.WithValue(r.Context(), callerModelKey{}, model)), body, targets, start)
+	return targets, nil
 }
 
 // splitModel reads a "<provider>/<model>" prefix. It reports the provider only
@@ -616,16 +660,104 @@ func bodyModel(body []byte) (string, bool) {
 // account that answers 401 is refreshed and retried once, which recovers a token
 // the provider revoked before its recorded expiry.
 func (a *api) failover(w http.ResponseWriter, r *http.Request, body []byte, targets []store.Connection, start int) {
-	client := clientShape(r.PathValue("path"))
-	stream := translate.Stream(body)
-	var reply translate.Reply
-	if client == translate.Anthropic {
+	fc, served := a.newFailoverCall(w, r, body, targets, start)
+	if served {
+		return
+	}
+	tried := 0
+	attempts := a.attemptsFor(fc.r.Context(), targets, start, fc.body)
+	for i, at := range attempts {
+		acc, ok := a.resolveAttempt(fc, at)
+		if !ok {
+			continue
+		}
+		call, err := a.buildUpstreamCall(fc, acc)
+		if err != nil {
+			var skip errSkipAccount
+			if errors.As(err, &skip) {
+				log.Printf("connection %s: %v", acc.conn.ID, skip.err)
+				continue
+			}
+			writeError(w, http.StatusBadRequest, "cannot translate the request: "+err.Error())
+			return
+		}
+		// A same-shape Chat Completions stream is asked for its usage so ccw
+		// can count it; the editor in relayAnswer takes it out again.
+		injected := false
+		if call.to == "" && fc.client == translate.OpenAI {
+			if want, _ := shapeFor(acc.p, acc.model); want == translate.OpenAI {
+				call.send, injected = withUsage(call.send)
+			}
+		}
+		call.send = filterFor(a, acc.p, acc.conn.Provider, call.send)
+		tried++
+		resp, err := a.sendWithRecovery(fc, acc, &call)
+		if err != nil {
+			continue
+		}
+		// Fail over on a busy status only while another account remains.
+		if retryableStatus(resp.StatusCode) {
+			log.Printf("connection %s: %s answered %d%s", acc.conn.ID, acc.conn.Provider, resp.StatusCode, modelNote(at.model))
+		}
+		if retryableStatus(resp.StatusCode) && i < len(attempts)-1 {
+			resp.Body.Close()
+			continue
+		}
+		a.relayAnswer(fc, acc, call, resp, injected)
+		return
+	}
+	if tried == 0 {
+		writeError(w, http.StatusInternalServerError, "no usable account")
+		return
+	}
+	writeError(w, http.StatusBadGateway, "all accounts failed")
+}
+
+// failoverCall is what stays the same across the accounts one request tries.
+type failoverCall struct {
+	w http.ResponseWriter
+	// r carries the Zen session, so every account of the request shares it.
+	r      *http.Request
+	body   []byte
+	client string
+	stream bool
+	reply  translate.Reply
+	// translated keeps the request in each provider shape already built, so
+	// accounts of one shape share one translation.
+	translated map[string][]byte
+}
+
+// accountTry is one account ready to be called: its provider, the bearer to
+// send, and the model it is asked for.
+type accountTry struct {
+	conn   store.Connection
+	p      provider.Provider
+	secret string
+	// model is the model the account is asked for; variant is the level
+	// variant ccw chose for it, or "".
+	model   string
+	variant string
+}
+
+// upstreamCall is the request built for one account: the path and body sent,
+// and the shapes the answer is translated between ("" when it passes through).
+type upstreamCall struct {
+	path, to, via string
+	send          []byte
+}
+
+// newFailoverCall reads what every account of a request shares and fills in
+// the client tools and the hosted search a non-Anthropic provider lacks. It
+// reports true when the server tools answered the request themselves.
+func (a *api) newFailoverCall(w http.ResponseWriter, r *http.Request, body []byte, targets []store.Connection, start int) (*failoverCall, bool) {
+	fc := &failoverCall{w: w, client: clientShape(r.PathValue("path")), stream: translate.Stream(body), translated: map[string][]byte{}}
+	if fc.client == translate.Anthropic {
 		callerModel, _ := r.Context().Value(callerModelKey{}).(string)
-		reply = translate.ReplyFor(body, callerModel)
+		fc.reply = translate.ReplyFor(body, callerModel)
 	}
 	// A client tool declared by type alone (bash, the editor, memory) gets the
 	// schema Anthropic keeps on its side; any other model needs it.
-	anthropic := client == translate.Anthropic && r.PathValue("path") == "messages" && !a.anyAnthropic(targets)
+	anthropic := fc.client == translate.Anthropic && r.PathValue("path") == "messages" && !a.anyAnthropic(targets)
 	if anthropic {
 		var dropped []string
 		body, dropped = servertools.FillClientTools(body)
@@ -634,211 +766,112 @@ func (a *api) failover(w http.ResponseWriter, r *http.Request, body []byte, targ
 	// A client that asks its model to search declares Anthropic's hosted tool,
 	// which no other provider has: ccw runs the search and answers with it.
 	if anthropic && websearch.Hosted(body) {
-		body, reply.Search = a.hostedSearch(r.Context(), body)
+		body, fc.reply.Search = a.hostedSearch(r.Context(), body)
 	}
 	if anthropic && servertools.Wants(body) {
 		// The tools Anthropic runs on its servers (the MCP connector, tool
 		// search, web fetch) are run here.
-		a.serverTools(w, r, body, targets, start, reply.Search)
-		return
+		a.serverTools(w, r, body, targets, start, fc.reply.Search)
+		return nil, true
 	}
-	translated := map[string][]byte{}
-	tried := 0
-	r = withZenSession(r)
-	attempts := a.attemptsFor(r.Context(), targets, start, body)
-	for i, at := range attempts {
-		conn := at.conn
-		p, ok := a.providerFor(conn)
-		if !ok {
-			continue
+	fc.body, fc.r = body, withZenSession(r)
+	return fc, false
+}
+
+// resolveAttempt finds an attempt's provider and the bearer to send. It
+// reports false for an account that cannot be called, which is skipped.
+func (a *api) resolveAttempt(fc *failoverCall, at attempt) (accountTry, bool) {
+	ctx := fc.r.Context()
+	acc := accountTry{conn: at.conn, variant: at.model}
+	var ok bool
+	if acc.p, ok = a.providerFor(at.conn); !ok {
+		return acc, false
+	}
+	secret, err := a.secretFor(ctx, at.conn.ID)
+	if err != nil {
+		return acc, false
+	}
+	if run, _ := ctx.Value(modelTestKey{}).(*testRun); run != nil {
+		run.used = at.conn.ID
+	}
+	if acc.secret, err = a.exchanged(ctx, acc.p, at.conn.ID, secret); err != nil {
+		log.Printf("connection %s: %v", at.conn.ID, err)
+		return acc, false
+	}
+	acc.model, _ = bodyModel(fc.body)
+	if at.model != "" {
+		acc.model = at.model
+	}
+	return acc, true
+}
+
+// buildUpstreamCall builds the request for one account. A caller of one shape
+// reaching a provider of the other gets its request translated, and the answer
+// translated back; a caller that already speaks the provider's shape is passed
+// through untouched. An errSkipAccount fails this account only. On any other
+// error outside Zen the call returned is the untranslated request, which the
+// Copilot /responses retry relies on.
+func (a *api) buildUpstreamCall(fc *failoverCall, acc accountTry) (upstreamCall, error) {
+	r, body, client, model := fc.r, fc.body, fc.client, acc.model
+	want, wantPath := shapeFor(acc.p, model)
+	c := upstreamCall{path: r.PathValue("path"), send: body}
+	if acc.p.API == translate.Zen {
+		// The free tier reads the whole request and answers each model on
+		// one endpoint, so its call is built here, per model.
+		if client == "" && c.path == "systemone" {
+			var err error
+			c.send, err = a.zenSystemOne(r, body, model)
+			return c, err
 		}
-		secret, err := a.secretFor(r.Context(), conn.ID)
+		if client != "" {
+			var err error
+			c.send, c.path, c.via, err = a.zenRequest(r, body, client, model)
+			c.to = client
+			return c, err
+		}
+	}
+	if client == "" || !translatable(want) {
+		return c, nil
+	}
+	if want == client {
+		// Same shape: bytes pass through, at the provider's own path.
+		if wantPath != "" {
+			c.path = wantPath
+		}
+		// Anthropic verifies a history that the other providers accept.
+		if client == translate.Anthropic && r.PathValue("path") == "messages" {
+			if healed, ok := translate.HealAnthropic(body); ok {
+				c.send = healed
+			}
+		}
+		return c, nil
+	}
+	if want == translate.Antigravity {
+		// The envelope names the account's project, so it is built
+		// per account from the chat form of the request.
+		hub, err := toProvider(body, client, translate.OpenAI)
 		if err != nil {
-			continue
+			return c, err
 		}
-		if run, _ := r.Context().Value(modelTestKey{}).(*testRun); run != nil {
-			run.used = conn.ID
-		}
-		if secret, err = a.exchanged(r.Context(), p, conn.ID, secret); err != nil {
-			log.Printf("connection %s: %v", conn.ID, err)
-			continue
-		}
-		// A caller of one shape reaching a provider of the other gets its
-		// request translated, and the answer translated back. A caller that
-		// already speaks the provider's shape is passed through untouched.
-		model, _ := bodyModel(body)
-		if at.model != "" {
-			model = at.model
-		}
-		path, send, to, via := r.PathValue("path"), body, "", ""
-		prepare := func() error {
-			want, wantPath := shapeFor(p, model)
-			path, send, to, via = r.PathValue("path"), body, "", ""
-			if p.API == translate.Zen {
-				// The free tier reads the whole request and answers each model on
-				// one endpoint, so its call is built here, per model.
-				if client == "" && path == "systemone" {
-					var err error
-					send, err = a.zenSystemOne(r, body, model)
-					return err
-				}
-				if client != "" {
-					var err error
-					send, path, via, err = a.zenRequest(r, body, client, model)
-					to = client
-					return err
-				}
-			}
-			if client == "" || !translatable(want) {
-				return nil
-			}
-			if want == client {
-				// Same shape: bytes pass through, at the provider's own path.
-				if wantPath != "" {
-					path = wantPath
-				}
-				// Anthropic verifies a history that the other providers accept.
-				if client == translate.Anthropic && r.PathValue("path") == "messages" {
-					if healed, ok := translate.HealAnthropic(body); ok {
-						send = healed
-					}
-				}
-				return nil
-			}
-			if want == translate.Antigravity {
-				// The envelope names the account's project, so it is built
-				// per account from the chat form of the request.
-				hub, err := toProvider(body, client, translate.OpenAI)
-				if err != nil {
-					return err
-				}
-				inner, err := translate.OpenAIToGemini(hub, &a.sigs)
-				if err != nil {
-					return err
-				}
-				env, err := a.antigravityEnvelope(r.Context(), conn, secret, model, inner)
-				if err != nil {
-					return errSkipAccount{err}
-				}
-				path, send, to, via = wantPath, env, client, want
-				return nil
-			}
-			tb, ok := translated[want]
-			if !ok {
-				var err error
-				if tb, err = toProvider(body, client, want); err != nil {
-					return err
-				}
-				translated[want] = tb
-			}
-			path, send, to, via = wantPath, tb, client, want
-			return nil
-		}
-		if err := prepare(); err != nil {
-			var skip errSkipAccount
-			if errors.As(err, &skip) {
-				log.Printf("connection %s: %v", conn.ID, skip.err)
-				continue
-			}
-			writeError(w, http.StatusBadRequest, "cannot translate the request: "+err.Error())
-			return
-		}
-		// A same-shape Chat Completions stream is asked for its usage so ccw
-		// can count it; the editor below takes it out again for the caller.
-		injected := false
-		if to == "" && client == translate.OpenAI {
-			if want, _ := shapeFor(p, model); want == translate.OpenAI {
-				send, injected = withUsage(send)
-			}
-		}
-		send = filterFor(a, p, conn.Provider, send)
-		tried++
-		resp, err := a.sendLogged(r, p, conn, path, secret, send, model)
+		inner, err := translate.OpenAIToGemini(hub, &a.sigs)
 		if err != nil {
-			log.Printf("connection %s: %v", conn.ID, err)
-			a.releaseZenSession(r)
-			continue
+			return c, err
 		}
-		// Copilot answers some models only on /responses and says so with a
-		// 400; remember the model and send it there.
-		if p.Exchange == "copilot" && resp.StatusCode == http.StatusBadRequest && client != "" && path != "responses" {
-			if b, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10)); isResponsesOnly(b) {
-				resp.Body.Close()
-				copilotResponsesModels.Store(model, true)
-				if err := prepare(); err == nil {
-					send = filterFor(a, p, conn.Provider, send)
-					if resp, err = a.sendLogged(r, p, conn, path, secret, send, model); err != nil {
-						continue
-					}
-				}
-			} else {
-				resp.Body = io.NopCloser(bytes.NewReader(b))
-			}
+		env, err := a.antigravityEnvelope(r.Context(), acc.conn, acc.secret, model, inner)
+		if err != nil {
+			return c, errSkipAccount{err}
 		}
-		if resp.StatusCode == http.StatusUnauthorized && p.Exchange != "" {
-			a.dropExchanged(conn.ID)
-			if fresh, err := a.exchanged(r.Context(), p, conn.ID, secret0(a, r, conn.ID)); err == nil {
-				resp.Body.Close()
-				if resp, err = a.sendLogged(r, p, conn, path, fresh, send, model); err != nil {
-					continue
-				}
-			}
-		}
-		if resp.StatusCode == http.StatusUnauthorized && a.isOAuth(conn.ID) {
-			if fresh, ok := a.forceRefresh(r.Context(), conn.ID); ok {
-				// For a provider that exchanges its token (Copilot), the upstream
-				// wants the exchanged bearer, not the renewed OAuth token; send the
-				// raw one and it answers 401 again.
-				if p.Exchange != "" {
-					a.dropExchanged(conn.ID)
-					if ex, eerr := a.exchanged(r.Context(), p, conn.ID, fresh); eerr == nil {
-						fresh = ex
-					}
-				}
-				resp.Body.Close()
-				if resp, err = a.sendLogged(r, p, conn, path, fresh, send, model); err != nil {
-					continue
-				}
-			}
-		}
-		// Fail over on a busy status only while another account remains.
-		if retryableStatus(resp.StatusCode) {
-			log.Printf("connection %s: %s answered %d%s", conn.ID, conn.Provider, resp.StatusCode, modelNote(at.model))
-		}
-		if retryableStatus(resp.StatusCode) && i < len(attempts)-1 {
-			resp.Body.Close()
-			continue
-		}
-		defer resp.Body.Close()
-		if at.model != "" {
-			// The model that answered, when ccw chose it (a level variant).
-			w.Header().Set("X-Ccw-Model", at.model)
-		}
-		// The answer names the model the caller asked for, prefix included.
-		callerModel, _ := r.Context().Value(callerModelKey{}).(string)
-		out, finish := w, func() {}
-		switch {
-		case to == "" && client != "":
-			out, finish = newReplyEditor(w, callerModel, model, injected)
-		case to == translate.OpenAI:
-			out, finish = newReplyEditor(w, callerModel, model, false)
-		}
-		switch {
-		case to != "":
-			a.relayVia(out, resp, conn.ID, to, via, stream, reply, conn.Provider, path)
-		case p.API == translate.Zen && path == "systemone" && resp.StatusCode == http.StatusOK:
-			a.relayZenSystemOne(out, resp, conn.ID)
-		default:
-			a.relayObserved(out, resp, conn.ID, conn.Provider, path)
-		}
-		finish()
-		return
+		return upstreamCall{path: wantPath, send: env, to: client, via: want}, nil
 	}
-	if tried == 0 {
-		writeError(w, http.StatusInternalServerError, "no usable account")
-		return
+	tb, ok := fc.translated[want]
+	if !ok {
+		var err error
+		if tb, err = toProvider(body, client, want); err != nil {
+			return c, err
+		}
+		fc.translated[want] = tb
 	}
-	writeError(w, http.StatusBadGateway, "all accounts failed")
+	return upstreamCall{path: wantPath, send: tb, to: client, via: want}, nil
 }
 
 // filterFor applies a provider's own request rules, then the blacklist, which

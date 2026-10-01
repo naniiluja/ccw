@@ -645,3 +645,109 @@ func collectChunks(via string, chunks io.Reader) []byte {
 	}
 	return translate.CollectOpenAIStream(chunks)
 }
+
+// sendWithRecovery sends one account's call and recovers what that account
+// alone can recover: Copilot's refusal of a model on /chat/completions, a stale
+// exchanged bearer, and a revoked OAuth token, refreshed once. An error means
+// the account is skipped. A failed first send is logged and releases the Zen
+// session; a failed resend is not, as the first answer already settled both.
+func (a *api) sendWithRecovery(fc *failoverCall, acc accountTry, call *upstreamCall) (*http.Response, error) {
+	resp, err := a.sendLogged(fc.r, acc.p, acc.conn, call.path, acc.secret, call.send, acc.model)
+	if err != nil {
+		log.Printf("connection %s: %v", acc.conn.ID, err)
+		a.releaseZenSession(fc.r)
+		return nil, err
+	}
+	if resp, err = a.retryResponsesOnly(fc, acc, call, resp); err != nil {
+		return nil, err
+	}
+	return a.retryUnauthorized(fc, acc, call, resp)
+}
+
+// retryResponsesOnly handles Copilot answering some models only on /responses,
+// which it says with a 400: the model is remembered and the call is built and
+// sent again, there. A rebuild that fails leaves the closed refusal in place.
+func (a *api) retryResponsesOnly(fc *failoverCall, acc accountTry, call *upstreamCall, resp *http.Response) (*http.Response, error) {
+	if acc.p.Exchange != "copilot" || resp.StatusCode != http.StatusBadRequest || fc.client == "" || call.path == "responses" {
+		return resp, nil
+	}
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if !isResponsesOnly(b) {
+		resp.Body = io.NopCloser(bytes.NewReader(b))
+		return resp, nil
+	}
+	resp.Body.Close()
+	copilotResponsesModels.Store(acc.model, true)
+	next, err := a.buildUpstreamCall(fc, acc)
+	*call = next
+	if err != nil {
+		return resp, nil
+	}
+	call.send = filterFor(a, acc.p, acc.conn.Provider, call.send)
+	return a.sendLogged(fc.r, acc.p, acc.conn, call.path, acc.secret, call.send, acc.model)
+}
+
+// retryUnauthorized resends a call the upstream refused with 401: once with a
+// freshly exchanged bearer (Copilot), then once with a force-refreshed OAuth
+// token, which recovers a token revoked before its recorded expiry.
+func (a *api) retryUnauthorized(fc *failoverCall, acc accountTry, call *upstreamCall, resp *http.Response) (*http.Response, error) {
+	ctx, id := fc.r.Context(), acc.conn.ID
+	var err error
+	if resp.StatusCode == http.StatusUnauthorized && acc.p.Exchange != "" {
+		a.dropExchanged(id)
+		if fresh, xerr := a.exchanged(ctx, acc.p, id, secret0(a, fc.r, id)); xerr == nil {
+			resp.Body.Close()
+			if resp, err = a.sendLogged(fc.r, acc.p, acc.conn, call.path, fresh, call.send, acc.model); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if resp.StatusCode == http.StatusUnauthorized && a.isOAuth(id) {
+		if fresh, ok := a.forceRefresh(ctx, id); ok {
+			// For a provider that exchanges its token (Copilot), the upstream
+			// wants the exchanged bearer, not the renewed OAuth token; send the
+			// raw one and it answers 401 again.
+			if acc.p.Exchange != "" {
+				a.dropExchanged(id)
+				if ex, eerr := a.exchanged(ctx, acc.p, id, fresh); eerr == nil {
+					fresh = ex
+				}
+			}
+			resp.Body.Close()
+			if resp, err = a.sendLogged(fc.r, acc.p, acc.conn, call.path, fresh, call.send, acc.model); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return resp, nil
+}
+
+// relayAnswer writes an account's answer to the caller, in the caller's shape
+// and naming the model the caller asked for, prefix included. The deferred
+// close of the answer's body runs after relayVia has closed its pipe, which
+// releases a producer still reading a slow upstream.
+func (a *api) relayAnswer(fc *failoverCall, acc accountTry, call upstreamCall, resp *http.Response, injected bool) {
+	defer resp.Body.Close()
+	w := fc.w
+	if acc.variant != "" {
+		// The model that answered, when ccw chose it (a level variant).
+		w.Header().Set("X-Ccw-Model", acc.variant)
+	}
+	callerModel, _ := fc.r.Context().Value(callerModelKey{}).(string)
+	out, finish := w, func() {}
+	switch {
+	case call.to == "" && fc.client != "":
+		out, finish = newReplyEditor(w, callerModel, acc.model, injected)
+	case call.to == translate.OpenAI:
+		out, finish = newReplyEditor(w, callerModel, acc.model, false)
+	}
+	switch {
+	case call.to != "":
+		a.relayVia(out, resp, acc.conn.ID, call.to, call.via, fc.stream, fc.reply, acc.conn.Provider, call.path)
+	case acc.p.API == translate.Zen && call.path == "systemone" && resp.StatusCode == http.StatusOK:
+		a.relayZenSystemOne(out, resp, acc.conn.ID)
+	default:
+		a.relayObserved(out, resp, acc.conn.ID, acc.conn.Provider, call.path)
+	}
+	finish()
+}
