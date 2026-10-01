@@ -66,54 +66,16 @@ func OpenAIToAnthropic(body []byte) ([]byte, error) {
 	}
 	out := obj{"model": in["model"]}
 
-	var system []any
-	var msgs []obj
-	for _, raw := range list(in["messages"]) {
-		m := asObj(raw)
-		switch role := str(m["role"]); role {
-		case "system", "developer":
-			for _, b := range oaContentToBlocks(m["content"]) {
-				if asObj(b)["type"] == "text" {
-					system = append(system, b)
-				}
-			}
-		case "user":
-			msgs = appendMsg(msgs, "user", oaContentToBlocks(m["content"]))
-		case "assistant":
-			blocks := oaContentToBlocks(m["content"])
-			for _, tc := range list(m["tool_calls"]) {
-				t := asObj(tc)
-				fn := asObj(t["function"])
-				blocks = append(blocks, obj{"type": "tool_use", "id": t["id"], "name": fn["name"],
-					"input": parseArgs(str(fn["arguments"]))})
-			}
-			msgs = appendMsg(msgs, "assistant", blocks)
-		case "tool":
-			res := obj{"type": "tool_result", "tool_use_id": m["tool_call_id"]}
-			if c := oaContentToBlocks(m["content"]); len(c) > 0 {
-				res["content"] = c
-			}
-			msgs = appendMsg(msgs, "user", []any{res})
-		default:
-			return nil, fmt.Errorf("unsupported message role %q", role)
-		}
+	system, msgs, err := oaMessagesToAnthropic(list(in["messages"]))
+	if err != nil {
+		return nil, err
 	}
 	if len(system) > 0 {
 		out["system"] = system
 	}
 	out["messages"] = msgs
 
-	var maxTok int64 = DefaultMaxTokens
-	switch {
-	case in["max_tokens"] != nil:
-		out["max_tokens"] = in["max_tokens"]
-		maxTok = num(in["max_tokens"])
-	case in["max_completion_tokens"] != nil:
-		out["max_tokens"] = in["max_completion_tokens"]
-		maxTok = num(in["max_completion_tokens"])
-	default:
-		out["max_tokens"] = DefaultMaxTokens
-	}
+	maxTok := oaMaxTokens(in, out)
 	tc := oaToolChoice(in["tool_choice"])
 	forcedTool := tc != nil && (tc["type"] == "any" || tc["type"] == "tool")
 
@@ -144,23 +106,7 @@ func OpenAIToAnthropic(body []byte) ([]byte, error) {
 		out["output_config"] = obj{"format": obj{"type": "json_schema", "schema": s}}
 	}
 	if tools := list(in["tools"]); len(tools) > 0 {
-		var ts []any
-		for _, t := range tools {
-			fn := asObj(asObj(t)["function"])
-			if fn == nil {
-				continue
-			}
-			schema := fn["parameters"]
-			if schema == nil {
-				schema = obj{"type": "object", "properties": obj{}}
-			}
-			td := obj{"name": fn["name"], "input_schema": schema}
-			if d := str(fn["description"]); d != "" {
-				td["description"] = d
-			}
-			ts = append(ts, td)
-		}
-		out["tools"] = ts
+		out["tools"] = oaToolsToAnthropic(tools)
 	}
 	if tc != nil {
 		if p, ok := in["parallel_tool_calls"].(bool); ok && !p {
@@ -169,6 +115,81 @@ func OpenAIToAnthropic(body []byte) ([]byte, error) {
 		out["tool_choice"] = tc
 	}
 	return json.Marshal(out)
+}
+
+// oaMessagesToAnthropic splits OpenAI messages into Anthropic system blocks
+// and alternating user and assistant messages.
+func oaMessagesToAnthropic(messages []any) ([]any, []obj, error) {
+	var system []any
+	var msgs []obj
+	for _, raw := range messages {
+		m := asObj(raw)
+		switch role := str(m["role"]); role {
+		case "system", "developer":
+			for _, b := range oaContentToBlocks(m["content"]) {
+				if asObj(b)["type"] == "text" {
+					system = append(system, b)
+				}
+			}
+		case "user":
+			msgs = appendMsg(msgs, "user", oaContentToBlocks(m["content"]))
+		case "assistant":
+			blocks := oaContentToBlocks(m["content"])
+			for _, tc := range list(m["tool_calls"]) {
+				t := asObj(tc)
+				fn := asObj(t["function"])
+				blocks = append(blocks, obj{"type": "tool_use", "id": t["id"], "name": fn["name"],
+					"input": parseArgs(str(fn["arguments"]))})
+			}
+			msgs = appendMsg(msgs, "assistant", blocks)
+		case "tool":
+			res := obj{"type": "tool_result", "tool_use_id": m["tool_call_id"]}
+			if c := oaContentToBlocks(m["content"]); len(c) > 0 {
+				res["content"] = c
+			}
+			msgs = appendMsg(msgs, "user", []any{res})
+		default:
+			return nil, nil, fmt.Errorf("unsupported message role %q", role)
+		}
+	}
+	return system, msgs, nil
+}
+
+// oaMaxTokens sets Anthropic's required max_tokens from max_tokens or
+// max_completion_tokens, and returns the value the thinking budget is cut from.
+func oaMaxTokens(in, out obj) int64 {
+	switch {
+	case in["max_tokens"] != nil:
+		out["max_tokens"] = in["max_tokens"]
+		return num(in["max_tokens"])
+	case in["max_completion_tokens"] != nil:
+		out["max_tokens"] = in["max_completion_tokens"]
+		return num(in["max_completion_tokens"])
+	}
+	out["max_tokens"] = DefaultMaxTokens
+	return DefaultMaxTokens
+}
+
+// oaToolsToAnthropic converts OpenAI function tools to Anthropic tools. It
+// returns nil when none of them is a function; the caller still sends that.
+func oaToolsToAnthropic(tools []any) []any {
+	var ts []any
+	for _, t := range tools {
+		fn := asObj(asObj(t)["function"])
+		if fn == nil {
+			continue
+		}
+		schema := fn["parameters"]
+		if schema == nil {
+			schema = obj{"type": "object", "properties": obj{}}
+		}
+		td := obj{"name": fn["name"], "input_schema": schema}
+		if d := str(fn["description"]); d != "" {
+			td["description"] = d
+		}
+		ts = append(ts, td)
+	}
+	return ts
 }
 
 // appendMsg adds content under role, merging into the previous message when it
@@ -339,19 +360,47 @@ func AnthropicToOpenAI(body []byte) ([]byte, error) {
 		return nil, err
 	}
 	out := obj{"model": in["model"]}
-	var msgs []any
-
-	switch s := in["system"].(type) {
-	case string:
-		if s != "" {
-			msgs = append(msgs, obj{"role": "system", "content": s})
-		}
-	case []any:
-		if t := joinText(s); t != "" {
-			msgs = append(msgs, obj{"role": "system", "content": t})
-		}
+	msgs, err := anthropicMessages(anthropicSystemMessage(in["system"]), list(in["messages"]))
+	if err != nil {
+		return nil, err
 	}
-	for _, raw := range list(in["messages"]) {
+	// Claude Code trims and compacts history, which can leave a call with no
+	// result or a result with no call; a chat provider refuses either.
+	out["messages"] = healChatMessages(msgs)
+
+	copyScalarFields(in, out)
+	if ts := anthropicTools(list(in["tools"])); len(ts) > 0 {
+		out["tools"] = ts
+	}
+	// A tool_choice with no function tool left (only server tools) would be
+	// refused upstream, so it goes with them.
+	if tc := asObj(in["tool_choice"]); tc != nil && out["tools"] != nil {
+		anthropicToolChoice(tc, out)
+	}
+	return json.Marshal(out)
+}
+
+// anthropicSystemMessage turns Anthropic's system field, a string or a list of
+// text blocks, into the leading OpenAI system message, or none when empty.
+func anthropicSystemMessage(system any) []any {
+	var t string
+	switch s := system.(type) {
+	case string:
+		t = s
+	case []any:
+		t = joinText(s)
+	}
+	if t == "" {
+		return nil
+	}
+	return []any{obj{"role": "system", "content": t}}
+}
+
+// anthropicMessages appends the OpenAI form of each Anthropic message to msgs.
+// It fails on a block the chat shape cannot carry: a document, or an image
+// source it cannot express as a URL.
+func anthropicMessages(msgs, messages []any) ([]any, error) {
+	for _, raw := range messages {
 		m := asObj(raw)
 		role := str(m["role"])
 		blocks, isList := m["content"].([]any)
@@ -359,71 +408,91 @@ func AnthropicToOpenAI(body []byte) ([]byte, error) {
 			msgs = append(msgs, obj{"role": role, "content": str(m["content"])})
 			continue
 		}
-		var parts []any
-		var calls []any
-		var resultImages []any
-		for _, b := range blocks {
-			blk := asObj(b)
-			switch str(blk["type"]) {
-			case "text":
-				parts = append(parts, obj{"type": "text", "text": blk["text"]})
-			case "image":
-				u := imageURL(asObj(blk["source"]))
-				if u == "" {
-					return nil, fmt.Errorf("an image source of type %q is not supported by this provider", str(asObj(blk["source"])["type"]))
-				}
-				parts = append(parts, obj{"type": "image_url", "image_url": obj{"url": u}})
-			case "document":
-				return nil, errors.New("document blocks are not supported by this provider")
-			case "tool_use":
-				args, _ := json.Marshal(blk["input"])
-				calls = append(calls, obj{"id": blk["id"], "type": "function",
-					"function": obj{"name": blk["name"], "arguments": string(args)}})
-			case "tool_result":
-				// A tool result is its own message in OpenAI, and it must follow
-				// the assistant turn that called the tool, before any user text.
-				content := blk["content"]
-				var images []any
-				if l, ok := content.([]any); ok {
-					content = joinText(l)
-					for _, p := range l {
-						if pb := asObj(p); str(pb["type"]) == "image" {
-							if u := imageURL(asObj(pb["source"])); u != "" {
-								images = append(images, obj{"type": "image_url", "image_url": obj{"url": u}})
-							}
-						}
-					}
-				}
-				if e, _ := blk["is_error"].(bool); e {
-					content = "Error: " + str(content)
-				}
-				msgs = append(msgs, obj{"role": "tool", "tool_call_id": blk["tool_use_id"], "content": str(content)})
-				// A tool message carries text only, so its images go to a user
-				// turn instead of being lost. That turn waits until every result
-				// of this turn is in: a user message between two results would
-				// leave the second call looking unanswered.
-				resultImages = append(resultImages, images...)
-			}
-		}
-		if role == "assistant" {
-			msg := obj{"role": "assistant", "content": joinParts(parts)}
-			if len(calls) > 0 {
-				msg["tool_calls"] = calls
-			}
-			if msg["content"] != nil || len(calls) > 0 {
-				msgs = append(msgs, msg)
-			}
-			continue
-		}
-		parts = append(resultImages, parts...)
-		if len(parts) > 0 {
-			msgs = append(msgs, obj{"role": role, "content": simplifyParts(parts)})
+		var err error
+		if msgs, err = anthropicMessage(msgs, role, blocks); err != nil {
+			return nil, err
 		}
 	}
-	// Claude Code trims and compacts history, which can leave a call with no
-	// result or a result with no call; a chat provider refuses either.
-	out["messages"] = healChatMessages(msgs)
+	return msgs, nil
+}
 
+// anthropicMessage appends one Anthropic message whose content is a list of
+// blocks. Its tool results go out first, each as a tool message of its own,
+// and the turn's text and images follow them.
+func anthropicMessage(msgs []any, role string, blocks []any) ([]any, error) {
+	var parts []any
+	var calls []any
+	var resultImages []any
+	for _, b := range blocks {
+		blk := asObj(b)
+		switch str(blk["type"]) {
+		case "text":
+			parts = append(parts, obj{"type": "text", "text": blk["text"]})
+		case "image":
+			u := imageURL(asObj(blk["source"]))
+			if u == "" {
+				return nil, fmt.Errorf("an image source of type %q is not supported by this provider", str(asObj(blk["source"])["type"]))
+			}
+			parts = append(parts, obj{"type": "image_url", "image_url": obj{"url": u}})
+		case "document":
+			return nil, errors.New("document blocks are not supported by this provider")
+		case "tool_use":
+			args, _ := json.Marshal(blk["input"])
+			calls = append(calls, obj{"id": blk["id"], "type": "function",
+				"function": obj{"name": blk["name"], "arguments": string(args)}})
+		case "tool_result":
+			// A tool result is its own message in OpenAI, and it must follow
+			// the assistant turn that called the tool, before any user text.
+			msg, images := anthropicToolResult(blk)
+			msgs = append(msgs, msg)
+			// A tool message carries text only, so its images go to a user
+			// turn instead of being lost. That turn waits until every result
+			// of this turn is in: a user message between two results would
+			// leave the second call looking unanswered.
+			resultImages = append(resultImages, images...)
+		}
+	}
+	if role == "assistant" {
+		msg := obj{"role": "assistant", "content": joinParts(parts)}
+		if len(calls) > 0 {
+			msg["tool_calls"] = calls
+		}
+		if msg["content"] != nil || len(calls) > 0 {
+			msgs = append(msgs, msg)
+		}
+		return msgs, nil
+	}
+	parts = append(resultImages, parts...)
+	if len(parts) > 0 {
+		msgs = append(msgs, obj{"role": role, "content": simplifyParts(parts)})
+	}
+	return msgs, nil
+}
+
+// anthropicToolResult converts a tool_result block to an OpenAI tool message,
+// and returns the images of its content as image_url parts, in order.
+func anthropicToolResult(blk obj) (obj, []any) {
+	content := blk["content"]
+	var images []any
+	if l, ok := content.([]any); ok {
+		content = joinText(l)
+		for _, p := range l {
+			if pb := asObj(p); str(pb["type"]) == "image" {
+				if u := imageURL(asObj(pb["source"])); u != "" {
+					images = append(images, obj{"type": "image_url", "image_url": obj{"url": u}})
+				}
+			}
+		}
+	}
+	if e, _ := blk["is_error"].(bool); e {
+		content = "Error: " + str(content)
+	}
+	return obj{"role": "tool", "tool_call_id": blk["tool_use_id"], "content": str(content)}, images
+}
+
+// copyScalarFields carries the sampling, thinking, stream, stop, user and
+// response format fields of a Messages request over to their chat names.
+func copyScalarFields(in, out obj) {
 	for _, k := range []string{"max_tokens", "temperature", "top_p"} {
 		if v, ok := in[k]; ok {
 			out[k] = v
@@ -455,41 +524,41 @@ func AnthropicToOpenAI(body []byte) ([]byte, error) {
 	if str(f["type"]) == "json_schema" && asObj(f["schema"]) != nil {
 		out["response_format"] = obj{"type": "json_schema", "json_schema": obj{"name": "response", "schema": f["schema"]}}
 	}
-	if tools := list(in["tools"]); len(tools) > 0 {
-		var ts []any
-		for _, t := range tools {
-			td := asObj(t)
-			if td["input_schema"] == nil {
-				continue // a server tool (web search, …) has no OpenAI counterpart
-			}
-			fn := obj{"name": td["name"], "parameters": CleanChatSchema(td["input_schema"])}
-			if d := str(td["description"]); d != "" {
-				fn["description"] = d
-			}
-			ts = append(ts, obj{"type": "function", "function": fn})
+}
+
+// anthropicTools converts the tools of a Messages request to function tools.
+func anthropicTools(tools []any) []any {
+	var ts []any
+	for _, t := range tools {
+		td := asObj(t)
+		if td["input_schema"] == nil {
+			continue // a server tool (web search, …) has no OpenAI counterpart
 		}
-		if len(ts) > 0 {
-			out["tools"] = ts
+		fn := obj{"name": td["name"], "parameters": CleanChatSchema(td["input_schema"])}
+		if d := str(td["description"]); d != "" {
+			fn["description"] = d
 		}
+		ts = append(ts, obj{"type": "function", "function": fn})
 	}
-	// A tool_choice with no function tool left (only server tools) would be
-	// refused upstream, so it goes with them.
-	if tc := asObj(in["tool_choice"]); tc != nil && out["tools"] != nil {
-		switch str(tc["type"]) {
-		case "auto":
-			out["tool_choice"] = "auto"
-		case "any":
-			out["tool_choice"] = "required"
-		case "none":
-			out["tool_choice"] = "none"
-		case "tool":
-			out["tool_choice"] = obj{"type": "function", "function": obj{"name": tc["name"]}}
-		}
-		if d, _ := tc["disable_parallel_tool_use"].(bool); d && out["tools"] != nil {
-			out["parallel_tool_calls"] = false
-		}
+	return ts
+}
+
+// anthropicToolChoice sets tool_choice and parallel_tool_calls from an
+// Anthropic tool_choice. It runs only when some function tool was kept.
+func anthropicToolChoice(tc, out obj) {
+	switch str(tc["type"]) {
+	case "auto":
+		out["tool_choice"] = "auto"
+	case "any":
+		out["tool_choice"] = "required"
+	case "none":
+		out["tool_choice"] = "none"
+	case "tool":
+		out["tool_choice"] = obj{"type": "function", "function": obj{"name": tc["name"]}}
 	}
-	return json.Marshal(out)
+	if d, _ := tc["disable_parallel_tool_use"].(bool); d {
+		out["parallel_tool_calls"] = false
+	}
 }
 
 func imageURL(src obj) string {
