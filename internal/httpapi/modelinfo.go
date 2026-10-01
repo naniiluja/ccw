@@ -151,96 +151,141 @@ func tokenCount(v any) int64 {
 	return 0
 }
 
+// readInfo reads what one model list entry says about thinking and effort,
+// whatever the provider's shape; ok reports whether the entry said anything.
+// The shapes are read in a fixed order because a later one can overwrite the
+// default effort or the always-thinks flag an earlier one set.
 func readInfo(m map[string]any) (ModelInfo, bool) {
-	var info ModelInfo
-	said := false
-	yes := func(v bool) {
-		said = true
-		if info.Thinking == nil || v {
-			info.Thinking = &v
-		}
-	}
-	addEffort := func(e string) {
-		if e != "" && !contains(info.Efforts, e) {
-			info.Efforts = append(info.Efforts, e)
-		}
-	}
+	var r infoReader
 	caps, _ := m["capabilities"].(map[string]any)
-	// Anthropic.
+	r.readAnthropic(caps)
+	r.readCopilot(caps)
+	r.readCodex(m)
+	r.readOpenRouter(m)
+	// Groq.
+	if f, ok := m["supported_features"].([]any); ok {
+		r.yes(contains(strs(f), "reasoning"))
+	}
+	// Antigravity.
+	if v, ok := m["supportsThinking"].(bool); ok {
+		r.yes(v)
+	}
+	r.readCloudflare(m)
+	return r.info, r.said
+}
+
+// infoReader gathers a ModelInfo across the shapes readInfo knows.
+type infoReader struct {
+	info ModelInfo
+	said bool
+}
+
+// yes records that a shape spoke about thinking; any shape saying it thinks
+// wins over one saying it does not.
+func (r *infoReader) yes(v bool) {
+	r.said = true
+	if r.info.Thinking == nil || v {
+		r.info.Thinking = &v
+	}
+}
+
+// addEffort appends an effort level once, skipping blanks.
+func (r *infoReader) addEffort(e string) {
+	if e != "" && !contains(r.info.Efforts, e) {
+		r.info.Efforts = append(r.info.Efforts, e)
+	}
+}
+
+// readAnthropic reads capabilities.thinking and capabilities.effort.
+func (r *infoReader) readAnthropic(caps map[string]any) {
 	if t, ok := caps["thinking"].(map[string]any); ok {
-		yes(t["supported"] == true)
+		r.yes(t["supported"] == true)
 	}
 	if e, ok := caps["effort"].(map[string]any); ok && e["supported"] == true {
 		for _, l := range effortOrder {
 			if v, ok := e[l].(map[string]any); ok && v["supported"] == true {
-				addEffort(l)
+				r.addEffort(l)
 			}
 		}
 	}
-	// Copilot.
-	if s, ok := caps["supports"].(map[string]any); ok {
-		for _, e := range strs(s["reasoning_effort"]) {
-			addEffort(e)
-		}
-		if len(info.Efforts) > 0 || s["adaptive_thinking"] == true || num(s["max_thinking_budget"]) > 0 {
-			yes(true)
-		} else {
-			yes(false)
-		}
+}
+
+// readCopilot reads capabilities.supports.
+func (r *infoReader) readCopilot(caps map[string]any) {
+	s, ok := caps["supports"].(map[string]any)
+	if !ok {
+		return
 	}
-	// Codex.
-	if levels, ok := m["supported_reasoning_levels"].([]any); ok {
-		for _, l := range levels {
-			if o, ok := l.(map[string]any); ok {
-				addEffort(str(o["effort"]))
-			}
-		}
-		yes(len(levels) > 0)
-		info.Default = str(m["default_reasoning_level"])
+	for _, e := range strs(s["reasoning_effort"]) {
+		r.addEffort(e)
 	}
-	// OpenRouter.
-	if params, ok := m["supported_parameters"].([]any); ok {
-		p := strs(params)
-		yes(contains(p, "reasoning") || contains(p, "include_reasoning"))
-		if contains(p, "reasoning_effort") && len(info.Efforts) == 0 {
-			info.Efforts = []string{"low", "medium", "high"}
-		}
-		if r, ok := m["reasoning"].(map[string]any); ok && r["mandatory"] == true {
-			info.Always = true
+	r.yes(len(r.info.Efforts) > 0 || s["adaptive_thinking"] == true || num(s["max_thinking_budget"]) > 0)
+}
+
+// readCodex reads supported_reasoning_levels and default_reasoning_level.
+func (r *infoReader) readCodex(m map[string]any) {
+	levels, ok := m["supported_reasoning_levels"].([]any)
+	if !ok {
+		return
+	}
+	for _, l := range levels {
+		if o, ok := l.(map[string]any); ok {
+			r.addEffort(str(o["effort"]))
 		}
 	}
-	// Groq.
-	if f, ok := m["supported_features"].([]any); ok {
-		yes(contains(strs(f), "reasoning"))
+	r.yes(len(levels) > 0)
+	r.info.Default = str(m["default_reasoning_level"])
+}
+
+// readOpenRouter reads supported_parameters and reasoning.mandatory.
+func (r *infoReader) readOpenRouter(m map[string]any) {
+	params, ok := m["supported_parameters"].([]any)
+	if !ok {
+		return
 	}
-	// Antigravity.
-	if v, ok := m["supportsThinking"].(bool); ok {
-		yes(v)
+	p := strs(params)
+	r.yes(contains(p, "reasoning") || contains(p, "include_reasoning"))
+	if contains(p, "reasoning_effort") && len(r.info.Efforts) == 0 {
+		r.info.Efforts = []string{"low", "medium", "high"}
 	}
-	// Cloudflare: properties [{property_id, value}].
-	if props, ok := m["properties"].([]any); ok {
-		thinks := false
-		for _, p := range props {
-			o, _ := p.(map[string]any)
-			switch str(o["property_id"]) {
-			case "reasoning":
-				thinks = thinks || str(o["value"]) == "true"
-			case "reasoning_effort":
-				thinks = true
-				if v, ok := o["value"].(map[string]any); ok {
-					for _, e := range strs(v["supported_efforts"]) {
-						addEffort(e)
-					}
-					info.Default = str(v["default_effort"])
-					info.Always = v["mandatory"] == true
-				}
-			case "require_workers_paid":
-				info.Paid = str(o["value"]) == "true"
-			}
+	if o, ok := m["reasoning"].(map[string]any); ok && o["mandatory"] == true {
+		r.info.Always = true
+	}
+}
+
+// readCloudflare reads properties: [{property_id, value}].
+func (r *infoReader) readCloudflare(m map[string]any) {
+	props, ok := m["properties"].([]any)
+	if !ok {
+		return
+	}
+	thinks := false
+	for _, p := range props {
+		o, _ := p.(map[string]any)
+		switch str(o["property_id"]) {
+		case "reasoning":
+			thinks = thinks || str(o["value"]) == "true"
+		case "reasoning_effort":
+			thinks = true
+			r.readCloudflareEffort(o["value"])
+		case "require_workers_paid":
+			r.info.Paid = str(o["value"]) == "true"
 		}
-		yes(thinks)
 	}
-	return info, said
+	r.yes(thinks)
+}
+
+// readCloudflareEffort reads the value of a reasoning_effort property.
+func (r *infoReader) readCloudflareEffort(value any) {
+	v, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	for _, e := range strs(v["supported_efforts"]) {
+		r.addEffort(e)
+	}
+	r.info.Default = str(v["default_effort"])
+	r.info.Always = v["mandatory"] == true
 }
 
 var effortOrder = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}

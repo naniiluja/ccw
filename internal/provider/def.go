@@ -81,7 +81,20 @@ func httpURL(s string) bool {
 }
 
 // Normalize fills defaults and checks a def; the error names the field.
+// The checks run in a fixed order and stop at the first error, so a def that
+// fails early is left with only the earlier defaults filled.
 func (d *Def) Normalize() error {
+	for _, step := range []func() error{d.normalizeIdentity, d.checkURLs, d.checkLook, d.normalizeModels, d.checkKind} {
+		if err := step(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// normalizeIdentity trims the id and base URL, checks the id, and fills the
+// name, kind and API defaults.
+func (d *Def) normalizeIdentity() error {
 	d.ID = strings.TrimSpace(strings.ToLower(d.ID))
 	d.BaseURL = strings.TrimRight(strings.TrimSpace(d.BaseURL), "/")
 	if !defID.MatchString(d.ID) {
@@ -101,15 +114,25 @@ func (d *Def) Normalize() error {
 	}
 	switch d.API {
 	case "openai", "anthropic", "responses", "typesafe":
-	default:
-		return errors.New("api: openai, anthropic, responses or typesafe")
+		return nil
 	}
+	return errors.New("api: openai, anthropic, responses or typesafe")
+}
+
+// checkURLs checks the base URL and the model list URL; {accountId} stands in
+// for a per-account path segment.
+func (d *Def) checkURLs() error {
 	if !httpURL(strings.ReplaceAll(d.BaseURL, "{accountId}", "x")) {
 		return errors.New("baseUrl: an http(s) URL")
 	}
 	if d.ModelsURL != "" && d.ModelsURL != "none" && !httpURL(strings.ReplaceAll(d.ModelsURL, "{accountId}", "x")) {
 		return errors.New("modelsUrl: an http(s) URL, or none")
 	}
+	return nil
+}
+
+// checkLook checks the icon, the color and the header names.
+func (d *Def) checkLook() error {
 	if d.Icon != "" && !strings.HasPrefix(d.Icon, "https://") && !strings.HasPrefix(d.Icon, "data:image/") {
 		return errors.New("icon: an https: or data:image/ URL")
 	}
@@ -121,6 +144,12 @@ func (d *Def) Normalize() error {
 			return fmt.Errorf("headers: %q is not a header name", k)
 		}
 	}
+	return nil
+}
+
+// normalizeModels drops blank model names and requires a list when the
+// provider has none to read.
+func (d *Def) normalizeModels() error {
 	models := d.Models[:0]
 	for _, m := range d.Models {
 		if m = strings.TrimSpace(m); m != "" {
@@ -131,37 +160,50 @@ func (d *Def) Normalize() error {
 	if d.ModelsURL == "none" && len(d.Models) == 0 {
 		return errors.New("models: list the models when the provider has no model list")
 	}
+	return nil
+}
+
+// checkKind checks the sign-in settings the kind needs; an API key def drops
+// any it was given.
+func (d *Def) checkKind() error {
 	switch d.Kind {
 	case KindAPIKey:
 		d.OAuth = nil
+		return nil
 	case KindOAuthCode, KindOAuthDevice:
-		o := d.OAuth
-		if o == nil {
-			return errors.New("oauth: the sign-in settings are required")
-		}
-		if o.ClientID == "" {
-			return errors.New("oauth.clientId is required")
-		}
-		if !httpURL(o.TokenURL) {
-			return errors.New("oauth.tokenUrl: an http(s) URL")
-		}
-		// verifyUrl becomes the href of the device sign-in link, so a
-		// javascript: or data: value would be executable in the dashboard.
-		if o.VerifyURL != "" && !httpURL(o.VerifyURL) {
-			return errors.New("oauth.verifyUrl: an http(s) URL, or none")
-		}
-		if d.Kind == KindOAuthCode {
-			if !httpURL(o.AuthorizeURL) {
-				return errors.New("oauth.authorizeUrl: an http(s) URL")
-			}
-			if o.RedirectURI == "" {
-				return errors.New("oauth.redirectUri is required (the one the provider's app registered)")
-			}
-		} else if !httpURL(o.DeviceCodeURL) {
+		return d.checkOAuth()
+	}
+	return errors.New("kind: apikey, oauth-code or oauth-device")
+}
+
+// checkOAuth checks the sign-in settings of an oauth-code or oauth-device def.
+func (d *Def) checkOAuth() error {
+	o := d.OAuth
+	if o == nil {
+		return errors.New("oauth: the sign-in settings are required")
+	}
+	if o.ClientID == "" {
+		return errors.New("oauth.clientId is required")
+	}
+	if !httpURL(o.TokenURL) {
+		return errors.New("oauth.tokenUrl: an http(s) URL")
+	}
+	// verifyUrl becomes the href of the device sign-in link, so a
+	// javascript: or data: value would be executable in the dashboard.
+	if o.VerifyURL != "" && !httpURL(o.VerifyURL) {
+		return errors.New("oauth.verifyUrl: an http(s) URL, or none")
+	}
+	if d.Kind == KindOAuthDevice {
+		if !httpURL(o.DeviceCodeURL) {
 			return errors.New("oauth.deviceCodeUrl: an http(s) URL")
 		}
-	default:
-		return errors.New("kind: apikey, oauth-code or oauth-device")
+		return nil
+	}
+	if !httpURL(o.AuthorizeURL) {
+		return errors.New("oauth.authorizeUrl: an http(s) URL")
+	}
+	if o.RedirectURI == "" {
+		return errors.New("oauth.redirectUri is required (the one the provider's app registered)")
 	}
 	return nil
 }
