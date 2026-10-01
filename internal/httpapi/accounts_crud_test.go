@@ -14,9 +14,8 @@ import (
 
 func loginCookie(t *testing.T, h http.Handler, cfg *auth.Config) *http.Cookie {
 	t.Helper()
-	form := url.Values{"totp": {auth.TOTPNow(cfg.TOTPSecret)}}
 	rec := httptest.NewRecorder()
-	req := loopbackRequest("POST", "/login", strings.NewReader(form.Encode()))
+	req := loopbackRequest("POST", "/login", strings.NewReader(loginForm(testPassword)))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	h.ServeHTTP(rec, req)
 	ck := cookieNamed(rec, sessionCookie)

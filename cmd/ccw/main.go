@@ -5,9 +5,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"time"
 
@@ -19,20 +19,9 @@ import (
 func main() {
 	addr := flag.String("addr", "127.0.0.1:20130", "listen address")
 	dbPath := flag.String("db", "ccw.db", "path to the database file")
-	enroll := flag.Bool("enroll", false, "print a new TOTP secret and otpauth URI, then exit")
-	showTOTP := flag.Bool("show-totp", false, "print this install's TOTP secret and how to add it to an authenticator app, then exit")
+	reset := flag.Bool("reset-password", false, "generate a new sign-in password, print it once, store only its hash, then exit")
 	insecure := flag.Bool("insecure-no-auth", false, "start with no sign-in gate; every caller reaches every stored credential")
 	flag.Parse()
-
-	if *enroll {
-		secret := auth.GenerateTOTPSecret()
-		uri := fmt.Sprintf("otpauth://totp/%s?secret=%s&issuer=ccw",
-			url.QueryEscape("ccw"), secret)
-		fmt.Println("CCW_TOTP_SECRET=" + secret)
-		fmt.Println("Add this to your authenticator app:")
-		fmt.Println("  " + uri)
-		return
-	}
 
 	s, err := store.Open(*dbPath)
 	if err != nil {
@@ -40,29 +29,20 @@ func main() {
 	}
 	defer s.Close()
 
+	if *reset {
+		if err := resetPassword(s, log.Writer()); err != nil {
+			log.Fatal(err)
+		}
+		if os.Getenv("CCW_PASSWORD") != "" {
+			log.Print("CCW_PASSWORD is set and takes precedence over the stored password")
+		}
+		return
+	}
+
 	noAuth := *insecure || os.Getenv("CCW_INSECURE_NO_AUTH") == "1"
-	var authCfg *auth.Config
-	if !noAuth || os.Getenv("CCW_TOTP_SECRET") != "" || *showTOTP {
-		secret, fresh, err := totpSecret(s, os.Getenv("CCW_TOTP_SECRET"))
-		if err != nil {
-			log.Fatal(err)
-		}
-		if *showTOTP {
-			fmt.Print(enrollmentGuide(secret))
-			return
-		}
-		if authCfg, err = auth.FromSecret(secret); err != nil {
-			log.Fatal(err)
-		}
-		if fresh {
-			log.Print("\n" + enrollmentGuide(secret))
-		}
-	}
-	if err := authDecision(authCfg, noAuth); err != nil {
+	authCfg, err := setupAuth(s, os.Getenv("CCW_PASSWORD"), noAuth, log.Writer())
+	if err != nil {
 		log.Fatal(err)
-	}
-	if authCfg == nil {
-		log.Printf("WARNING: no CCW_TOTP_SECRET set, the server is not authenticated")
 	}
 
 	srv := &http.Server{
@@ -77,34 +57,77 @@ func main() {
 	}
 }
 
-const totpSetting = "totp_secret"
+// passwordSetting is the settings key that holds the hash of the sign-in
+// password. The plaintext is never stored.
+const passwordSetting = "password_hash"
 
-// totpSecret returns the sign-in secret: the environment's, else the one this
-// install created on its first start, else a new one that is saved (fresh).
-func totpSecret(s *store.Store, env string) (secret string, fresh bool, err error) {
-	if env != "" {
-		return env, false, nil
+// setupAuth builds the sign-in gate. env is CCW_PASSWORD. With noAuth and no
+// password the server starts open, and says so on out. out is the startup log:
+// the only secret ever written to it is a password this call generated.
+func setupAuth(s *store.Store, env string, noAuth bool, out io.Writer) (*auth.Config, error) {
+	var authCfg *auth.Config
+	if !noAuth || env != "" {
+		hash, err := passwordHash(s, env, out)
+		if err != nil {
+			return nil, err
+		}
+		if authCfg, err = auth.FromHash(hash); err != nil {
+			return nil, err
+		}
 	}
-	if saved, _ := s.GetSetting(totpSetting); saved != "" {
-		return saved, false, nil
+	if err := authDecision(authCfg, noAuth); err != nil {
+		return nil, err
 	}
-	secret = auth.GenerateTOTPSecret()
-	if err := s.SetSetting(totpSetting, secret); err != nil {
-		return "", false, fmt.Errorf("save the TOTP secret: %w", err)
+	if authCfg == nil {
+		fmt.Fprintln(out, "WARNING: the sign-in gate is off, the server is not authenticated")
 	}
-	return secret, true, nil
+	return authCfg, nil
 }
 
-// enrollmentGuide tells the owner how to add the secret to an authenticator app.
-func enrollmentGuide(secret string) string {
-	uri := fmt.Sprintf("otpauth://totp/ccw?secret=%s&issuer=ccw", secret)
-	return "Dashboard sign-in: add this install's TOTP secret to an authenticator app.\n" +
-		"  Setup key: " + secret + "\n" +
-		"  Or open this URI on the phone: " + uri + "\n" +
-		"  1. In the authenticator app (Google Authenticator, 1Password, Aegis), add an account.\n" +
-		"  2. Choose \"Enter a setup key\". Type the name ccw and the setup key above. Keep \"Time based\".\n" +
-		"  3. Open the dashboard and type the 6-digit code that the app shows.\n" +
-		"Run `ccw -db <file> -show-totp` to print this again. Keep the key secret.\n"
+// passwordHash returns the hash the gate checks: the hash of the environment's
+// password, else the one this install stored, else the hash of a new password
+// that is generated, printed once on out and stored as a hash only.
+func passwordHash(s *store.Store, env string, out io.Writer) (string, error) {
+	if env != "" {
+		if err := auth.ValidatePassword(env); err != nil {
+			return "", fmt.Errorf("CCW_PASSWORD: %w", err)
+		}
+		return auth.HashPassword(env)
+	}
+	saved, err := s.GetSetting(passwordSetting)
+	if err != nil {
+		return "", fmt.Errorf("read the password hash: %w", err)
+	}
+	if saved != "" {
+		return saved, nil
+	}
+	if err := resetPassword(s, out); err != nil {
+		return "", err
+	}
+	return s.GetSetting(passwordSetting)
+}
+
+// resetPassword generates a new password, stores only its hash, and prints the
+// password once on out. This notice is the one place a secret is written out.
+func resetPassword(s *store.Store, out io.Writer) error {
+	password := auth.GeneratePassword()
+	hash, err := auth.HashPassword(password)
+	if err != nil {
+		return err
+	}
+	if err := s.SetSetting(passwordSetting, hash); err != nil {
+		return fmt.Errorf("save the password hash: %w", err)
+	}
+	fmt.Fprint(out, passwordNotice(password))
+	return nil
+}
+
+// passwordNotice tells the owner the new dashboard password. It is shown once.
+func passwordNotice(password string) string {
+	return "\nDashboard sign-in: this install's password is shown once and only its hash is kept.\n" +
+		"  Password: " + password + "\n" +
+		"Store it in a password manager. Run `ccw -db <file> -reset-password` to replace it,\n" +
+		"or set CCW_PASSWORD (at least 12 characters) to choose your own.\n"
 }
 
 // authDecision refuses to start an ungated server. The reference deployment
@@ -112,8 +135,8 @@ func enrollmentGuide(secret string) string {
 // reaches the port.
 func authDecision(authCfg *auth.Config, insecureNoAuth bool) error {
 	if authCfg == nil && !insecureNoAuth {
-		return errors.New("CCW_TOTP_SECRET is not set: every caller would reach every stored credential. " +
-			"Set it, or pass -insecure-no-auth (or CCW_INSECURE_NO_AUTH=1) to start with no gate")
+		return errors.New("no sign-in gate: every caller would reach every stored credential. " +
+			"Set CCW_PASSWORD or let ccw generate one, or pass -insecure-no-auth (or CCW_INSECURE_NO_AUTH=1) to start with no gate")
 	}
 	return nil
 }

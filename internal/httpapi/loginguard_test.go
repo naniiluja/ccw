@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -18,13 +19,15 @@ const (
 	addrLoopback = "127.0.0.1:54321"
 	addrTunnel   = "127.0.0.1:54322" // cloudflared connects from this machine
 	addrPublic   = "203.0.113.9:443"
+	// wrongPassword is long enough to be a valid password, and is not testPassword.
+	wrongPassword = "wrong-password-1"
 )
 
 // loginPost builds a POST /login the way a browser sends it. remoteAddr is the
 // connection the server sees: the tunnel connects from loopback and names the
 // real caller in CF-Connecting-IP.
-func loginPost(code, remoteAddr string, header map[string]string, cookies ...*http.Cookie) *http.Request {
-	form := url.Values{"totp": {code}}
+func loginPost(password, remoteAddr string, header map[string]string, cookies ...*http.Cookie) *http.Request {
+	form := url.Values{"password": {password}}
 	r := httptest.NewRequest("POST", "/login", strings.NewReader(form.Encode()))
 	r.Host = "127.0.0.1:20130"
 	r.RemoteAddr = remoteAddr
@@ -60,12 +63,12 @@ func guardCounts(g *loginGuard) (public, addresses, devices int) {
 	return len(g.public), len(g.perIP), len(g.device)
 }
 
-// fillPublicBudget sends wrong codes from a new address each time, so only the
+// fillPublicBudget sends wrong passwords from a new address each time, so only the
 // public budget can stop them. It returns the handler's last status.
 func fillPublicBudget(t *testing.T, h http.Handler) {
 	t.Helper()
 	for i := 0; i < loginPublicMax; i++ {
-		rec := send(h, loginPost("000000", addrTunnel, map[string]string{
+		rec := send(h, loginPost(wrongPassword, addrTunnel, map[string]string{
 			"CF-Connecting-IP": fmt.Sprintf("198.51.100.%d", i%256),
 		}))
 		if rec.Code != http.StatusUnauthorized {
@@ -74,19 +77,20 @@ func fillPublicBudget(t *testing.T, h http.Handler) {
 	}
 }
 
-// T1-1 (1) and T7-5 (b): the public budget bounds how many codes a caller that
+// T1-1 (1) and T7-5 (b): the public budget bounds how many passwords a caller that
 // rotates its address can have evaluated. The numbers come from the constants.
 func TestLoginBruteForceBoundIsBelowOnePercent(t *testing.T) {
 	const span = 30 * 24 * time.Hour
 	windows := int(span / loginPublicWin)
 	maxChecks := windows * loginPublicMax
-	// Three time windows are accepted, so one guess matches with 3 of 10^6.
-	const perGuess = 3e-6
+	// The weakest accepted password is the minimum length drawn from the 26
+	// lowercase letters, so one guess matches with 1 of 26^MinPasswordLength.
+	perGuess := math.Pow(26, -float64(auth.MinPasswordLength))
 	if maxChecks > 3000 {
-		t.Errorf("%d evaluated codes in 30 days, want at most 3000", maxChecks)
+		t.Errorf("%d evaluated passwords in 30 days, want at most 3000", maxChecks)
 	}
 	if p := float64(maxChecks) * perGuess; p >= 0.01 {
-		t.Errorf("%d codes in 30 days gives p=%.4f, want below 0.01", maxChecks, p)
+		t.Errorf("%d passwords in 30 days gives p=%.4g, want below 0.01", maxChecks, p)
 	}
 }
 
@@ -123,9 +127,9 @@ func TestLoginGuardReserveIsAtomicUnderLoad(t *testing.T) {
 	}
 }
 
-// T1-1 (2) and T7-5: 200 concurrent wrong codes through the real handler. A 401
-// means the code was evaluated; a 429 means the guard stopped the request
-// before that, so the count of 401 answers is the count of code checks.
+// T1-1 (2) and T7-5: 200 concurrent wrong passwords through the real handler. A 401
+// means the password was checked; a 429 means the guard stopped the request
+// before that, so the count of 401 answers is the count of password checks.
 func TestLoginHandlerEvaluatesNoMoreCodesThanTheCap(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -144,7 +148,7 @@ func TestLoginHandlerEvaluatesNoMoreCodesThanTheCap(t *testing.T) {
 				wg.Add(1)
 				go func(i int) {
 					defer wg.Done()
-					rec := send(h, loginPost("000000", addrTunnel, map[string]string{
+					rec := send(h, loginPost(wrongPassword, addrTunnel, map[string]string{
 						"CF-Connecting-IP": tc.cfOf(i),
 					}))
 					switch rec.Code {
@@ -159,7 +163,7 @@ func TestLoginHandlerEvaluatesNoMoreCodesThanTheCap(t *testing.T) {
 			}
 			wg.Wait()
 			if got := int(evaluated.Load()); got > tc.cap {
-				t.Fatalf("%d codes evaluated, want at most %d", got, tc.cap)
+				t.Fatalf("%d passwords checked, want at most %d", got, tc.cap)
 			}
 			if evaluated.Load()+refused.Load() != 200 {
 				t.Fatalf("answers: %d evaluated + %d refused, want 200", evaluated.Load(), refused.Load())
@@ -168,40 +172,40 @@ func TestLoginHandlerEvaluatesNoMoreCodesThanTheCap(t *testing.T) {
 	}
 }
 
-// T1-1 (3): wrong codes below the cap never block the correct one.
-func TestLoginAcceptsACorrectCodeAfterFourWrongOnes(t *testing.T) {
+// T1-1 (3): wrong passwords below the cap never block the correct one.
+func TestLoginAcceptsACorrectPasswordAfterFourWrongOnes(t *testing.T) {
 	s := openStore(t)
 	cfg := authConfig()
 	h := NewWithAuth(s, nil, cfg)
 	head := map[string]string{"CF-Connecting-IP": "198.51.100.30"}
 	for i := 0; i < loginPerIPMax-1; i++ {
-		if rec := send(h, loginPost("000000", addrTunnel, head)); rec.Code != http.StatusUnauthorized {
-			t.Fatalf("wrong code %d: code=%d, want 401", i, rec.Code)
+		if rec := send(h, loginPost(wrongPassword, addrTunnel, head)); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("wrong password %d: code=%d, want 401", i, rec.Code)
 		}
 	}
-	rec := send(h, loginPost(auth.TOTPNow(cfg.TOTPSecret), addrTunnel, head))
+	rec := send(h, loginPost(testPassword, addrTunnel, head))
 	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/" {
-		t.Fatalf("correct code after %d wrong ones: code=%d loc=%q, want 302 -> /",
+		t.Fatalf("correct password after %d wrong ones: code=%d loc=%q, want 302 -> /",
 			loginPerIPMax-1, rec.Code, rec.Header().Get("Location"))
 	}
 	if cookieNamed(rec, sessionCookie) == nil {
-		t.Fatal("the correct code set no session cookie")
+		t.Fatal("the correct password set no session cookie")
 	}
 }
 
-// T1-1 (4): a correct code gives its charge back, so it leaves nothing behind.
+// T1-1 (4): a correct password gives its charge back, so it leaves nothing behind.
 func TestSuccessfulLoginLeavesNoEntryInAnyBudget(t *testing.T) {
 	s := openStore(t)
 	cfg := authConfig()
 	a, h := newServer(s, nil, cfg)
-	rec := send(h, loginPost(auth.TOTPNow(cfg.TOTPSecret), addrTunnel,
+	rec := send(h, loginPost(testPassword, addrTunnel,
 		map[string]string{"CF-Connecting-IP": "198.51.100.31"}))
 	if rec.Code != http.StatusFound {
 		t.Fatalf("login code=%d, want 302", rec.Code)
 	}
 	public, addresses, devices := guardCounts(a.login)
 	if public != 0 || addresses != 0 || devices != 0 {
-		t.Fatalf("after a correct code: public=%d addresses=%d devices=%d, want 0 0 0", public, addresses, devices)
+		t.Fatalf("after a correct password: public=%d addresses=%d devices=%d, want 0 0 0", public, addresses, devices)
 	}
 }
 
@@ -214,21 +218,21 @@ func TestAFullPublicBudgetNeverLocksOutTheOwnerPath(t *testing.T) {
 	h := NewWithAuth(s, nil, cfg)
 	fillPublicBudget(t, h)
 
-	// The budget is full: one more public attempt never reaches the code.
-	full := send(h, loginPost("000000", addrTunnel, map[string]string{"CF-Connecting-IP": "198.51.100.200"}))
+	// The budget is full: one more public attempt never reaches the password check.
+	full := send(h, loginPost(wrongPassword, addrTunnel, map[string]string{"CF-Connecting-IP": "198.51.100.200"}))
 	if full.Code != http.StatusTooManyRequests {
 		t.Fatalf("public attempt with a full budget: code=%d, want 429", full.Code)
 	}
 
-	// (b) a correct code that arrives through the tunnel still gets 429.
-	code := auth.TOTPNow(cfg.TOTPSecret)
-	tun := send(h, loginPost(code, addrTunnel, map[string]string{"CF-Connecting-IP": "198.51.100.201"}))
+	// (b) a correct password that arrives through the tunnel still gets 429.
+	password := testPassword
+	tun := send(h, loginPost(password, addrTunnel, map[string]string{"CF-Connecting-IP": "198.51.100.201"}))
 	if tun.Code != http.StatusTooManyRequests {
-		t.Fatalf("correct code from the tunnel with a full budget: code=%d, want 429", tun.Code)
+		t.Fatalf("correct password from the tunnel with a full budget: code=%d, want 429", tun.Code)
 	}
 
-	// (a) the same code on the owner path signs in.
-	own := send(h, loginPost(code, addrLoopback, nil))
+	// (a) the same password on the owner path signs in.
+	own := send(h, loginPost(password, addrLoopback, nil))
 	if own.Code != http.StatusFound || own.Header().Get("Location") != "/" {
 		t.Fatalf("owner path with a full budget: code=%d loc=%q, want 302 -> /", own.Code, own.Header().Get("Location"))
 	}
@@ -244,16 +248,16 @@ func TestDeviceCookieSignsInWhileThePublicBudgetIsFull(t *testing.T) {
 	cfg := authConfig()
 	h := NewWithAuth(s, nil, cfg)
 	fillPublicBudget(t, h)
-	code := auth.TOTPNow(cfg.TOTPSecret)
+	password := testPassword
 	head := map[string]string{"CF-Connecting-IP": "198.51.100.210"}
 
 	forged := &http.Cookie{Name: deviceCookie, Value: "0123456789abcdef.not-a-real-signature"}
-	if rec := send(h, loginPost(code, addrTunnel, head, forged)); rec.Code != http.StatusTooManyRequests {
+	if rec := send(h, loginPost(password, addrTunnel, head, forged)); rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("forged device cookie: code=%d, want 429 (the public lane)", rec.Code)
 	}
 
 	known := &http.Cookie{Name: deviceCookie, Value: cfg.IssueDevice()}
-	rec := send(h, loginPost(code, addrTunnel, head, known))
+	rec := send(h, loginPost(password, addrTunnel, head, known))
 	if rec.Code != http.StatusFound {
 		t.Fatalf("known device with a full public budget: code=%d, want 302", rec.Code)
 	}
@@ -266,7 +270,7 @@ func TestSuccessfulLoginSetsADeviceCookie(t *testing.T) {
 	s := openStore(t)
 	cfg := authConfig()
 	h := NewWithAuth(s, nil, cfg)
-	rec := send(h, loginPost(auth.TOTPNow(cfg.TOTPSecret), addrLoopback, nil))
+	rec := send(h, loginPost(testPassword, addrLoopback, nil))
 	if rec.Code != http.StatusFound {
 		t.Fatalf("login code=%d, want 302", rec.Code)
 	}
@@ -295,7 +299,7 @@ func TestLoginKeepsAKnownDeviceCookie(t *testing.T) {
 	cfg := authConfig()
 	h := NewWithAuth(s, nil, cfg)
 	known := &http.Cookie{Name: deviceCookie, Value: cfg.IssueDevice()}
-	rec := send(h, loginPost(auth.TOTPNow(cfg.TOTPSecret), addrLoopback, nil, known))
+	rec := send(h, loginPost(testPassword, addrLoopback, nil, known))
 	if rec.Code != http.StatusFound {
 		t.Fatalf("login code=%d, want 302", rec.Code)
 	}
@@ -312,11 +316,11 @@ func TestDeviceLaneHasItsOwnBudget(t *testing.T) {
 	known := &http.Cookie{Name: deviceCookie, Value: cfg.IssueDevice()}
 	head := map[string]string{"CF-Connecting-IP": "198.51.100.220"}
 	for i := 0; i < loginDeviceMax; i++ {
-		if rec := send(h, loginPost("000000", addrTunnel, head, known)); rec.Code != http.StatusUnauthorized {
+		if rec := send(h, loginPost(wrongPassword, addrTunnel, head, known)); rec.Code != http.StatusUnauthorized {
 			t.Fatalf("device attempt %d: code=%d, want 401", i, rec.Code)
 		}
 	}
-	if rec := send(h, loginPost("000000", addrTunnel, head, known)); rec.Code != http.StatusTooManyRequests {
+	if rec := send(h, loginPost(wrongPassword, addrTunnel, head, known)); rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("attempt %d from one device: code=%d, want 429", loginDeviceMax+1, rec.Code)
 	}
 	public, addresses, devices := guardCounts(a.login)
@@ -472,31 +476,12 @@ func TestClientIPPrefersCFThenXFFFromLoopbackOnly(t *testing.T) {
 	}
 }
 
-// A TOTP code opens one session. A second use inside the same window gets the
-// wrong-code answer.
-func TestTOTPCodeCannotBeReplayed(t *testing.T) {
-	s := openStore(t)
-	cfg := authConfig()
-	h := NewWithAuth(s, nil, cfg)
-	code := auth.TOTPNow(cfg.TOTPSecret)
-	if rec := send(h, loginPost(code, addrLoopback, nil)); rec.Code != http.StatusFound {
-		t.Fatalf("first use: code=%d, want 302", rec.Code)
-	}
-	rec := send(h, loginPost(code, addrLoopback, nil))
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("second use of the same code: code=%d, want 401", rec.Code)
-	}
-	if cookieNamed(rec, sessionCookie) != nil {
-		t.Error("a replayed code opened a session")
-	}
-}
-
-// A sign-in body carries one 6-digit field. Anything larger is refused before
-// the form is read.
+// A sign-in body carries one password field. Anything larger than the cap is
+// refused before the form is read.
 func TestLoginBodyIsCapped(t *testing.T) {
 	s := openStore(t)
 	h := NewWithAuth(s, nil, authConfig())
-	body := "totp=" + strings.Repeat("1", loginBodyMax+1)
+	body := "password=" + strings.Repeat("1", loginBodyMax+1)
 	r := httptest.NewRequest("POST", "/login", strings.NewReader(body))
 	r.Host = "127.0.0.1:20130"
 	r.RemoteAddr = addrLoopback
@@ -513,12 +498,12 @@ func TestLoopbackWithoutHeaderIsPublicByDefault(t *testing.T) {
 	t.Setenv("CCW_OWNER_LOOPBACK", "")
 	h := NewWithAuth(openStore(t), nil, authConfig())
 	for i := 1; i <= loginPerIPMax; i++ {
-		if rec := send(h, loginPost("000000", addrLoopback, nil)); rec.Code != http.StatusUnauthorized {
-			t.Fatalf("wrong code %d: status %d, want 401", i, rec.Code)
+		if rec := send(h, loginPost(wrongPassword, addrLoopback, nil)); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("wrong password %d: status %d, want 401", i, rec.Code)
 		}
 	}
-	if rec := send(h, loginPost("000000", addrLoopback, nil)); rec.Code != http.StatusTooManyRequests {
-		t.Fatalf("wrong code %d: status %d, want 429", loginPerIPMax+1, rec.Code)
+	if rec := send(h, loginPost(wrongPassword, addrLoopback, nil)); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("wrong password %d: status %d, want 429", loginPerIPMax+1, rec.Code)
 	}
 	r := httptest.NewRequest("POST", "/login", nil)
 	r.RemoteAddr = addrLoopback
@@ -532,8 +517,8 @@ func TestOwnerLoopbackOptInRestoresLocalLane(t *testing.T) {
 	t.Setenv("CCW_OWNER_LOOPBACK", "1")
 	h := NewWithAuth(openStore(t), nil, authConfig())
 	for i := 1; i <= 3*loginPerIPMax; i++ {
-		if rec := send(h, loginPost("000000", addrLoopback, nil)); rec.Code != http.StatusUnauthorized {
-			t.Fatalf("wrong code %d: status %d, want 401", i, rec.Code)
+		if rec := send(h, loginPost(wrongPassword, addrLoopback, nil)); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("wrong password %d: status %d, want 401", i, rec.Code)
 		}
 	}
 }

@@ -4,50 +4,30 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/subtle"
-	"encoding/base32"
 	"encoding/hex"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
-// Config holds the single operator's credentials. It is built from the
-// environment so no secret is compiled in or committed. The person logs in with
-// a TOTP code alone; a machine uses the bearer token.
+// Config holds the single operator's credentials. It keeps only the hash of the
+// password, so no plaintext is compiled in, committed or held in memory. The
+// person logs in with the password alone; a machine uses the bearer token.
 type Config struct {
-	TOTPSecret string // base32
-	APIToken   string
-	sessionKey []byte
-	ttlSeconds int64
-	// mu guards lastStep, the newest TOTP step that was accepted.
-	mu       sync.Mutex
-	lastStep int64
+	APIToken     string
+	passwordHash string
+	sessionKey   []byte
+	ttlSeconds   int64
 }
 
 func nowUnix() int64 { return time.Now().Unix() }
 
-// CheckCode verifies a TOTP code. This is the only browser login factor. A code
-// is single use: its step must be newer than the last accepted one, so a code
-// read over a shoulder cannot open a second session inside its window.
-func (c *Config) CheckCode(code string) bool {
-	return c.checkCodeAt(code, nowUnix())
-}
-
-func (c *Config) checkCodeAt(code string, now int64) bool {
-	step, ok := matchStepAt(c.TOTPSecret, code, now)
-	if !ok {
-		return false
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if step <= c.lastStep {
-		return false
-	}
-	c.lastStep = step
-	return true
+// CheckPassword verifies the password, the only browser login factor. The login
+// guard in httpapi caps how many wrong ones are checked.
+func (c *Config) CheckPassword(password string) bool {
+	return verifyPassword(c.passwordHash, password)
 }
 
 // CheckAPIToken verifies an "Authorization: Bearer <token>" header for machines.
@@ -74,8 +54,8 @@ func (c *Config) ValidSession(tok string) bool {
 func (c *Config) TTLSeconds() int { return int(c.ttlSeconds) }
 
 // IssueDevice returns a value for the device cookie: a random id and an HMAC
-// over it. It grants no access. The login guard reads it to charge a wrong code
-// to this browser's own budget instead of the public one.
+// over it. It grants no access. The login guard reads it to charge a wrong
+// password to this browser's own budget instead of the public one.
 func (c *Config) IssueDevice() string {
 	id := hex.EncodeToString(randomBytes(16))
 	return id + "." + sign(c.sessionKey, id)
@@ -94,24 +74,14 @@ func (c *Config) DeviceID(value string) (id string, ok bool) {
 	return id, true
 }
 
-// FromEnv builds a Config from environment variables. It returns nil and no
-// error when CCW_TOTP_SECRET is unset, which leaves the server open
-// (loopback use). A secret that does not decode is an error: it would refuse
-// every code, so the caller must stop instead of starting a dead gate. A
-// missing session key is generated so a restart invalidates old cookies.
-func FromEnv() (*Config, error) {
-	secret := os.Getenv("CCW_TOTP_SECRET")
-	if secret == "" {
-		return nil, nil
-	}
-	return FromSecret(secret)
-}
-
-// FromSecret builds a Config for a TOTP secret; the other values come from the
-// environment as in FromEnv.
-func FromSecret(secret string) (*Config, error) {
-	if err := ValidateSecret(secret); err != nil {
-		return nil, fmt.Errorf("CCW_TOTP_SECRET: %w", err)
+// FromHash builds a Config for a stored password hash; the token, session key
+// and session lifetime come from the environment. A hash that does not parse is
+// an error: it would refuse every password, so the caller must stop instead of
+// starting a dead gate. A missing session key is generated so a restart
+// invalidates old cookies.
+func FromHash(passwordHash string) (*Config, error) {
+	if _, err := parseHash(passwordHash); err != nil {
+		return nil, fmt.Errorf("the stored password hash: %w", err)
 	}
 	ttl := int64(12 * 3600)
 	if v, err := strconv.ParseInt(os.Getenv("CCW_SESSION_TTL"), 10, 64); err == nil && v > 0 {
@@ -122,34 +92,24 @@ func FromSecret(secret string) (*Config, error) {
 		key = randomBytes(32)
 	}
 	return &Config{
-		TOTPSecret: secret,
-		APIToken:   os.Getenv("CCW_API_TOKEN"),
-		sessionKey: key,
-		ttlSeconds: ttl,
+		APIToken:     os.Getenv("CCW_API_TOKEN"),
+		passwordHash: passwordHash,
+		sessionKey:   key,
+		ttlSeconds:   ttl,
 	}, nil
 }
 
 // NewConfig builds a Config from explicit values, for callers that hold them.
-func NewConfig(totpSecret, apiToken string, sessionKey []byte, ttlSeconds int64) *Config {
+// passwordHash is a value from HashPassword.
+func NewConfig(passwordHash, apiToken string, sessionKey []byte, ttlSeconds int64) *Config {
 	if len(sessionKey) == 0 {
 		sessionKey = randomBytes(32)
 	}
-	return &Config{TOTPSecret: totpSecret, APIToken: apiToken, sessionKey: sessionKey, ttlSeconds: ttlSeconds}
+	return &Config{APIToken: apiToken, passwordHash: passwordHash, sessionKey: sessionKey, ttlSeconds: ttlSeconds}
 }
 
 func randomBytes(n int) []byte {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)
 	return b
-}
-
-// GenerateTOTPSecret returns a new base32 TOTP secret for enrollment.
-func GenerateTOTPSecret() string {
-	return base32.StdEncoding.EncodeToString(randomBytes(20))
-}
-
-// TOTPNow returns the current code for a secret. Handy for enrollment checks.
-func TOTPNow(secret string) string {
-	code, _ := totpAt(secret, nowUnix())
-	return code
 }

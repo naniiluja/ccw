@@ -1,8 +1,10 @@
 package main
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -37,15 +39,60 @@ func TestGitignoreExcludesEnvFiles(t *testing.T) {
 	}
 }
 
-// TestGodocDoesNotClaimAPassword pins T7-6 (1): login is TOTP-only.
-func TestGodocDoesNotClaimAPassword(t *testing.T) {
-	for _, name := range []string{"internal/auth/totp.go", "internal/httpapi/server.go"} {
+// samplePassword matches an example value for CCW_PASSWORD written in a
+// comment. A comment may name the variable but must not show a password a
+// reader could copy into a deployment.
+var samplePassword = regexp.MustCompile(`CCW_PASSWORD=[^\s<>]`)
+
+// TestCommentsShowNoSamplePassword keeps sample passwords out of the godoc and
+// comments of every Go source file. The tests in main_test.go hold the rest of
+// the invariant: the plaintext is in neither the database nor the startup log.
+func TestCommentsShowNoSamplePassword(t *testing.T) {
+	for _, name := range repoGoFiles(t, false) {
 		for _, line := range strings.Split(repoFile(t, name), "\n") {
-			if strings.HasPrefix(strings.TrimSpace(line), "//") && strings.Contains(line, "password") {
-				t.Errorf("%s: comment still names a password: %s", name, strings.TrimSpace(line))
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "//") && samplePassword.MatchString(trimmed) {
+				t.Errorf("%s: comment shows a sample password: %s", name, trimmed)
 			}
 		}
 	}
+}
+
+// repoGoFiles lists the Go files of the repository, relative to its root. It
+// skips hidden directories (.git, and .claude whose worktrees hold older copies
+// of this tree) and node_modules. With tests set it lists only the _test.go
+// files, otherwise only the others.
+func repoGoFiles(t *testing.T, tests bool) []string {
+	t.Helper()
+	root := filepath.Join("..", "..")
+	var names []string
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if path != root && (strings.HasPrefix(d.Name(), ".") || d.Name() == "node_modules") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") != tests {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		names = append(names, rel)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk the repository: %v", err)
+	}
+	if len(names) == 0 {
+		t.Fatal("found no Go files")
+	}
+	return names
 }
 
 // workflowJob returns the lines of one job under `jobs:` in a workflow file,
@@ -97,11 +144,13 @@ func TestReleaseWorkflowGatesPublishOnTests(t *testing.T) {
 }
 
 // TestFixturesLookLikePlaceholders keeps fake tokens out of a secret scanner's
-// Google pattern (`ya29.`).
+// Google access-token pattern in every test file. The needle is built at run
+// time so this file does not match itself.
 func TestFixturesLookLikePlaceholders(t *testing.T) {
-	for _, name := range []string{"internal/httpapi/antigravity_test.go", "internal/httpapi/variants_test.go"} {
-		if strings.Contains(repoFile(t, name), "ya29.") {
-			t.Errorf("%s still holds a ya29. fixture", name)
+	needle := "ya" + "29."
+	for _, name := range repoGoFiles(t, true) {
+		if strings.Contains(repoFile(t, name), needle) {
+			t.Errorf("%s still holds a %s fixture", name, needle)
 		}
 	}
 }

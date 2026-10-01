@@ -7,8 +7,9 @@ import (
 	"time"
 )
 
-// loginBodyMax caps the sign-in body. The form carries one 6-digit field, so a
-// larger body comes from something else.
+// loginBodyMax caps the sign-in body. The form carries one password field, and
+// 4 KB leaves room for any password a person types, so a larger body comes from
+// something else.
 const loginBodyMax = 4 << 10
 
 // deviceMaxAge keeps the device cookie longer than any session, because it is
@@ -25,16 +26,16 @@ func (a *api) loginSubmit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad form")
 		return
 	}
-	// The attempt is charged before the code is checked, so a flood cannot get
-	// more code checks than the lane allows.
+	// The attempt is charged before the password is checked, so a flood cannot
+	// get more password checks than the lane allows.
 	src := loginSourceOf(r, a.auth.DeviceID, a.login.ownerLoopback)
 	if ok, wait := a.login.reserve(src, time.Now()); !ok {
 		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
 		writeError(w, http.StatusTooManyRequests, "Too many attempts. Wait a few minutes.")
 		return
 	}
-	if !a.auth.CheckCode(r.PostFormValue("totp")) {
-		writeError(w, http.StatusUnauthorized, "Wrong or expired code. Try again.")
+	if !a.auth.CheckPassword(r.PostFormValue("password")) {
+		writeError(w, http.StatusUnauthorized, "Wrong password. Try again.")
 		return
 	}
 	a.login.refund(src)
@@ -52,7 +53,7 @@ func (a *api) loginSubmit(w http.ResponseWriter, r *http.Request) {
 }
 
 // setDeviceCookie marks this browser as one that has signed in. The cookie
-// grants nothing on its own: it only moves a later wrong code to a per-device
+// grants nothing on its own: it only moves a later wrong password to a per-device
 // budget, which a stranger cannot fill because a stranger cannot sign it. A
 // browser keeps the device it already has, so its budget is not reset.
 func (a *api) setDeviceCookie(w http.ResponseWriter, r *http.Request) {
