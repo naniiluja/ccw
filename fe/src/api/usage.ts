@@ -1,4 +1,5 @@
 import { queryOptions, useQuery } from '@tanstack/react-query'
+import { accountsQuery } from './accounts'
 import { api } from './client'
 
 /** Daily counters for one account and model (GET /usage). */
@@ -21,19 +22,9 @@ export const usageQuery = queryOptions({
 /** useUsage: `data` is UsageRow[], newest day first, as the server sends it. */
 export const useUsage = () => useQuery(usageQuery)
 
-interface AccountRef {
-  id: string
-  provider: string
-  label: string
-}
-
 /** useUsageAccounts maps a connection id to a readable account name. */
 export const useUsageAccounts = () =>
   useQuery({
-    queryKey: ['accounts', 'labels'],
-    queryFn: ({ signal }) =>
-      api<{ accounts: AccountRef[] }>('/accounts', { signal }).then(
-        (r) => r.accounts ?? [],
-      ),
+    ...accountsQuery,
     select: (list) => new Map(list.map((a) => [a.id, a.label || a.id])),
   })

@@ -47,6 +47,8 @@ export function UsageChart({
               tickMargin={8}
               tickFormatter={shortDay}
               minTickGap={16}
+              label={{ value: 'Ngày', position: 'insideBottom', offset: -4 }}
+              height={40}
             />
             <YAxis
               tickLine={false}
