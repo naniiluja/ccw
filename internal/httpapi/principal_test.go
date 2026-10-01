@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -9,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/naniiluja/ccw/internal/provider"
 	"github.com/naniiluja/ccw/internal/store"
@@ -216,59 +214,5 @@ func TestProviderDefCredentialsAreMaskedForAKey(t *testing.T) {
 	d, ok := provider.Declared("acme")
 	if !ok || d.OAuth.ClientSecret != "s3cret" || d.Headers["X-Org-Key"] != "h-secret" {
 		t.Errorf("the stored def changed: %+v", d)
-	}
-}
-
-// For Slack, Discord, ntfy and n8n the webhook url IS the credential.
-func TestWebhookURLNeverReachesADashboardKey(t *testing.T) {
-	s, _ := store.Open(filepath.Join(t.TempDir(), "t.db"))
-	defer s.Close()
-	cfg := authConfig()
-	h := NewWithAuth(s, nil, cfg)
-	ck := loginCookie(t, h, cfg)
-	k := keyThroughDashboard(t, h, ck, "laptop")
-
-	ch := `{"name":"ops","type":"webhook","enabled":true,"config":{"url":"https://hooks.example.com/services/T/B/SECRET"}}`
-	req := loopbackRequest("POST", "/notify/channels", strings.NewReader(ch))
-	req.AddCookie(ck)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != 200 {
-		t.Fatalf("create channel: %d %s", rec.Code, rec.Body.String())
-	}
-	s.NoteNotifySent(channelID(t, s), `Post "https://hooks.example.com/services/T/B/SECRET": dial error`)
-
-	if b := getAs(h, "/api/notify", k.Key).Body.String(); strings.Contains(b, "SECRET") {
-		t.Errorf("GET /api/notify with a key leaks the url: %s", b)
-	}
-	if b := getWithCookie(h, "/notify", ck).Body.String(); !strings.Contains(b, "SECRET") {
-		t.Errorf("the session lost the url: %s", b)
-	}
-	// The MCP tool reads the same channels.
-	text, isErr := toolText(t, rpc(t, h, k.Key, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_notify_channels","arguments":{}}}`))
-	if !isErr || strings.Contains(text, "SECRET") {
-		t.Errorf("list_notify_channels with a key: isErr=%v text=%s", isErr, text)
-	}
-}
-
-func channelID(t *testing.T, s *store.Store) string {
-	t.Helper()
-	list, _ := s.ListNotifyChannels()
-	if len(list) != 1 {
-		t.Fatalf("channels = %d", len(list))
-	}
-	return list[0].ID
-}
-
-// A failed send must not put the webhook url into the stored error.
-func TestWebhookSendErrorHidesTheURL(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	err := sendWebhook(ctx, map[string]string{"url": "https://hooks.invalid.example/services/T/B/SECRET"}, notifyMsg{Title: "t"})
-	if err == nil {
-		t.Fatal("an unreachable webhook returned no error")
-	}
-	if strings.Contains(err.Error(), "SECRET") || strings.Contains(err.Error(), "/services/") {
-		t.Errorf("the error carries the url: %v", err)
 	}
 }

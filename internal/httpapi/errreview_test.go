@@ -18,23 +18,6 @@ import (
 	"github.com/naniiluja/ccw/internal/store"
 )
 
-// alertsServer stands in for Telegram and keeps what it was sent.
-func alertsServer(t *testing.T) func() []string {
-	var mu sync.Mutex
-	var got []string
-	tg := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.ParseForm()
-		mu.Lock()
-		got = append(got, r.URL.Path+" "+r.Form.Get("chat_id")+" "+r.Form.Get("message_thread_id")+" "+r.Form.Get("text"))
-		mu.Unlock()
-		w.Write([]byte(`{"ok":true}`))
-	}))
-	old := telegramAPI
-	telegramAPI = tg.URL
-	t.Cleanup(func() { telegramAPI = old; tg.Close() })
-	return func() []string { mu.Lock(); defer mu.Unlock(); return append([]string(nil), got...) }
-}
-
 func TestErrorReviewBlacklistsWhatTheReplayProves(t *testing.T) {
 	var mu sync.Mutex
 	upCalls := 0
@@ -63,7 +46,6 @@ func TestErrorReviewBlacklistsWhatTheReplayProves(t *testing.T) {
 		w.Write(b)
 	}))
 	defer judge.Close()
-	alerts := alertsServer(t)
 	s, _ := store.Open(filepath.Join(t.TempDir(), "t.db"))
 	defer s.Close()
 	s.CreateConnection("groq", "g", "k")
@@ -73,11 +55,6 @@ func TestErrorReviewBlacklistsWhatTheReplayProves(t *testing.T) {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, loopbackRequest(method, path, strings.NewReader(body)))
 		return rec
-	}
-	// A channel for the alerts; its token never comes back.
-	rec := do("POST", "/notify/channels", `{"name":"ops","type":"telegram","enabled":true,"config":{"botToken":"123456:SECRETTOKEN","chatId":"-100","threadId":"3114"}}`)
-	if rec.Code != 200 || strings.Contains(rec.Body.String(), "SECRETTOKEN") {
-		t.Fatalf("channel: %d %s", rec.Code, rec.Body.String())
 	}
 	// The review cannot be on without a model.
 	if rec := do("POST", "/errors/review", `{"enabled":true}`); rec.Code != 200 || strings.Contains(rec.Body.String(), `"enabled":true`) {
@@ -89,7 +66,7 @@ func TestErrorReviewBlacklistsWhatTheReplayProves(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		postV1(h, `{"model":"groq/m","anti_cheat":1,"messages":[{"role":"user","content":"hi"}]}`)
 	}
-	rec = do("POST", "/errors/review", `{"run":true}`)
+	rec := do("POST", "/errors/review", `{"run":true}`)
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"judged":1`) {
 		t.Fatalf("run: %d %s", rec.Code, rec.Body.String())
 	}
@@ -106,10 +83,6 @@ func TestErrorReviewBlacklistsWhatTheReplayProves(t *testing.T) {
 	// Judged once; nothing is due now.
 	if rec := do("POST", "/errors/review", `{"run":true}`); !strings.Contains(rec.Body.String(), `"judged":0`) || judgeCalls != 1 {
 		t.Errorf("second run: %s, judge calls %d", rec.Body.String(), judgeCalls)
-	}
-	got := alerts()
-	if len(got) != 1 || !strings.Contains(got[0], "/bot123456:SECRETTOKEN/sendMessage -100 3114") || !strings.Contains(got[0], "Blacklisted field: anti_cheat") {
-		t.Errorf("alerts = %q", got)
 	}
 }
 
@@ -144,52 +117,6 @@ func TestErrorReviewClosesPassingFailuresWithoutTheModel(t *testing.T) {
 	list, _ := s.ListErrorVerdicts(0)
 	if judged || len(list) != 1 || list[0].Action != "ignore" || list[0].Cause != "passing failure" {
 		t.Errorf("judged=%v verdicts=%+v (%s)", judged, list, rec.Body.String())
-	}
-}
-
-func TestNotifyChannels(t *testing.T) {
-	alerts := alertsServer(t)
-	s, _ := store.Open(filepath.Join(t.TempDir(), "t.db"))
-	defer s.Close()
-	h := New(s, nil)
-	do := func(method, path, body string) *httptest.ResponseRecorder {
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, loopbackRequest(method, path, strings.NewReader(body)))
-		return rec
-	}
-	for body, want := range map[string]string{
-		`{"type":"telegram","config":{"chatId":"1"}}`:                               "Bot token is required",
-		`{"type":"telegram","config":{"botToken":"x","chatId":"1","threadId":"a"}}`: "Topic id: a number",
-		`{"type":"webhook","config":{"url":"ftp://x"}}`:                             "URL: an http(s) address",
-		`{"type":"sms","config":{}}`:                                                "type: one of",
-	} {
-		if rec := do("POST", "/notify/channels", body); rec.Code != 400 || !strings.Contains(rec.Body.String(), want) {
-			t.Errorf("%s: %d %s", body, rec.Code, rec.Body.String())
-		}
-	}
-	var c store.NotifyChannel
-	json.Unmarshal(do("POST", "/notify/channels", `{"name":"tg","type":"telegram","enabled":true,"events":["error.action","bogus"],"config":{"botToken":"123:ABCDEFGHIJ","chatId":"-100"}}`).Body.Bytes(), &c)
-	if c.Config["botToken"] != "••••GHIJ" || len(c.Events) != 1 {
-		t.Fatalf("saved = %+v", c)
-	}
-	// Saving the masked form back keeps the token.
-	body, _ := json.Marshal(map[string]any{"name": "tg2", "type": "telegram", "enabled": true, "events": c.Events, "config": c.Config})
-	do("PUT", "/notify/channels/"+c.ID, string(body))
-	if rec := do("POST", "/notify/channels/"+c.ID+"/test", ""); rec.Code != 200 {
-		t.Fatalf("test: %d %s", rec.Code, rec.Body.String())
-	}
-	got := alerts()
-	if len(got) != 1 || !strings.HasPrefix(got[0], "/bot123:ABCDEFGHIJ/sendMessage -100 ") {
-		t.Errorf("alerts = %q", got)
-	}
-	// An event the channel does not take is not sent; one it takes is, once per key.
-	a := h.(interface {
-		ServeHTTP(http.ResponseWriter, *http.Request)
-	})
-	_ = a
-	info := do("GET", "/notify", "").Body.String()
-	if !strings.Contains(info, `"name":"tg2"`) || !strings.Contains(info, `"types"`) || strings.Contains(info, "ABCDEF") {
-		t.Errorf("info = %s", info)
 	}
 }
 
@@ -322,7 +249,7 @@ func TestErrorReviewWaitsForTheOwnerOnKeyTraffic(t *testing.T) {
 }
 
 // Two passes over the same group would pay every model call twice and file the
-// rule and the alert twice.
+// rule twice.
 func TestErrorReviewRunsOneAtATime(t *testing.T) {
 	release := make(chan struct{})
 	var mu sync.Mutex
@@ -337,17 +264,10 @@ func TestErrorReviewRunsOneAtATime(t *testing.T) {
 		w.Write(b)
 	}))
 	defer judge.Close()
-	alerts := alertsServer(t)
 	s, _ := store.Open(filepath.Join(t.TempDir(), "t.db"))
 	defer s.Close()
 	s.CreateConnection("openrouter", "o", "k2")
 	a, h := newServer(s, map[string]string{"openrouter": judge.URL}, nil)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, loopbackRequest("POST", "/notify/channels",
-		strings.NewReader(`{"name":"ops","type":"telegram","enabled":true,"config":{"botToken":"123:TOK","chatId":"-100"}}`)))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("channel: %d %s", rec.Code, rec.Body.String())
-	}
 	for i := 0; i < 3; i++ {
 		s.AddUpstreamError(store.UpstreamError{Provider: "groq", Connection: "c1", Model: "m", Client: "internal",
 			Endpoint: "chat/completions", Status: 400, Class: ClassRejected, Signature: "400 unknown field anti_cheat",
@@ -360,7 +280,7 @@ func TestErrorReviewRunsOneAtATime(t *testing.T) {
 	if _, err := a.reviewErrors(context.Background()); !errors.Is(err, errReviewRunning) {
 		t.Errorf("second pass err = %v, want %v", err, errReviewRunning)
 	}
-	rec = httptest.NewRecorder()
+	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, loopbackRequest("POST", "/errors/review", strings.NewReader(`{"run":true}`)))
 	if rec.Code != http.StatusConflict {
 		t.Errorf("POST run while running = %d %s, want 409", rec.Code, rec.Body.String())
@@ -378,13 +298,10 @@ func TestErrorReviewRunsOneAtATime(t *testing.T) {
 	if got := reviewFilters(t, s); len(got) != 1 {
 		t.Errorf("filters = %v, want one", got)
 	}
-	if got := alerts(); len(got) != 1 || !strings.Contains(got[0], "Blacklisted field: anti_cheat") {
-		t.Errorf("alerts = %q, want one", got)
-	}
 }
 
 // A pass that is already running is not a model failure: the loop must not
-// pause the review or tell the channels.
+// pause the review.
 func TestErrorReviewLoopTreatsABusyPassAsNoError(t *testing.T) {
 	release := make(chan struct{})
 	var mu sync.Mutex
@@ -399,17 +316,10 @@ func TestErrorReviewLoopTreatsABusyPassAsNoError(t *testing.T) {
 		w.Write(b)
 	}))
 	defer judge.Close()
-	alerts := alertsServer(t)
 	s, _ := store.Open(filepath.Join(t.TempDir(), "t.db"))
 	defer s.Close()
 	s.CreateConnection("openrouter", "o", "k2")
-	a, h := newServer(s, map[string]string{"openrouter": judge.URL}, nil)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, loopbackRequest("POST", "/notify/channels",
-		strings.NewReader(`{"name":"ops","type":"telegram","enabled":true,"config":{"botToken":"123:TOK","chatId":"-100"}}`)))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("channel: %d %s", rec.Code, rec.Body.String())
-	}
+	a, _ := newServer(s, map[string]string{"openrouter": judge.URL}, nil)
 	for i := 0; i < 3; i++ {
 		s.AddUpstreamError(store.UpstreamError{Provider: "groq", Connection: "c1", Model: "m", Client: "internal",
 			Endpoint: "chat/completions", Status: 400, Class: ClassRejected, Signature: "400 refused",
@@ -427,11 +337,6 @@ func TestErrorReviewLoopTreatsABusyPassAsNoError(t *testing.T) {
 	<-done
 	if !paused.IsZero() || lastErr != "" {
 		t.Errorf("pauseTill = %v lastError = %q, want the busy pass ignored", paused, lastErr)
-	}
-	for _, m := range alerts() {
-		if strings.Contains(m, "paused") {
-			t.Errorf("a busy pass alerted: %q", m)
-		}
 	}
 }
 

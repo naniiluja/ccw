@@ -142,9 +142,6 @@ func (a *api) secretFor(ctx context.Context, connID string) (string, error) {
 		creds.RefreshToken, jsonTokenBody(a.providerOf(connID)))
 	if rerr != nil {
 		log.Printf("refresh oauth for connection %s: %v", connID, rerr)
-		go a.notify(EventAccountAuth, "auth|"+connID, 6*time.Hour, notifyMsg{Title: "An account's sign-in failed to renew",
-			Lines: []string{"Account: " + connID, "Error: " + truncate(rerr.Error(), 200), "Sign in again on the provider's page."},
-			Path:  "#/providers"})
 		return a.currentSecret(connID)
 	}
 	effRT := newRT
@@ -158,7 +155,7 @@ func (a *api) secretFor(ctx context.Context, connID string) (string, error) {
 			refreshToken: effRT,
 			expiresAt:    expStr,
 		})
-		a.alertUnsavedToken(connID, uerr)
+		logUnsavedToken(connID, uerr)
 	} else {
 		a.refresh.clearOverride(connID)
 	}
@@ -186,15 +183,10 @@ func (a *api) providerOf(connID string) string {
 	return ""
 }
 
-// alertUnsavedToken reports a refresh that the store did not keep. This process
+// logUnsavedToken reports a refresh that the store did not keep. This process
 // holds the only copy of the new token, so a restart loses the account.
-func (a *api) alertUnsavedToken(connID string, err error) {
+func logUnsavedToken(connID string, err error) {
 	log.Printf("store refreshed token for connection %s: %v", connID, err)
-	go a.notify(EventAccountAuth, "authsave|"+connID, 6*time.Hour, notifyMsg{
-		Title: "An account renewed its sign-in, but the new token was not saved",
-		Lines: []string{"Account: " + connID, "Error: " + truncate(err.Error(), 200),
-			"ccw uses the new token now. A restart loses it. Sign in again on the provider's page."},
-		Path: "#/providers"})
 }
 
 // needsRefresh reports whether an access token should be refreshed. An unknown
@@ -256,7 +248,7 @@ func (a *api) forceRefresh(ctx context.Context, connID string) (string, bool) {
 			refreshToken: effRT,
 			expiresAt:    expStr,
 		})
-		a.alertUnsavedToken(connID, uerr)
+		logUnsavedToken(connID, uerr)
 	} else {
 		a.refresh.clearOverride(connID)
 	}

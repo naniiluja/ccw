@@ -47,6 +47,9 @@ func (a *api) migrateCustomEndpoints() {
 	}
 }
 
+// maskedValue stands in for a credential that a caller may not read.
+const maskedValue = "••••"
+
 // maskDef hides the credentials a declared provider carries: the OAuth client
 // secret, and the static header values, which hold an organisation key. It
 // copies what it changes, so the stored def and the registry keep their value.

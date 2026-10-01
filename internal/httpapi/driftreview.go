@@ -351,9 +351,6 @@ func (a *api) autoBlacklist(c store.ShapeChange, facts map[string]any) string {
 		Note: "drift review: " + c.Kind + " on " + c.Endpoint, Enabled: true}); err != nil {
 		return "blacklist failed: " + err.Error()
 	}
-	a.notify(EventDriftAction, "", 0, notifyMsg{Title: "Drift: blacklisted " + pattern,
-		Lines: []string{"Provider: " + pnameOf(c.Provider), "Field " + c.Kind + " on " + c.Endpoint,
-			fmt.Sprintf("Refused requests since: %d", facts["failed_answers_since"].(int))}, Path: "#/drift/all"})
 	return "blacklisted " + pattern
 }
 
@@ -422,7 +419,7 @@ func (a *api) reviewLoop() {
 }
 
 // reviewOnce runs one pass and records a failure of the model. A pass that is
-// already running is not a failure, so it neither pauses nor alerts.
+// already running is not a failure, so it does not pause.
 func (a *api) reviewOnce() {
 	a.drift.Drain()
 	a.drift.Flush()
@@ -431,8 +428,6 @@ func (a *api) reviewOnce() {
 	case errors.Is(err, errReviewRunning):
 	case err != nil:
 		log.Printf("drift review: %v", err)
-		a.notify(EventReviewPaused, "paused|drift", 6*time.Hour, notifyMsg{Title: "Drift review paused for 10 minutes",
-			Lines: []string{truncate(err.Error(), 300)}, Path: "#/drift"})
 		a.review.mu.Lock()
 		a.review.pauseTill, a.review.lastError = time.Now().Add(reviewBackoff), err.Error()
 		a.review.mu.Unlock()

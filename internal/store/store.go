@@ -82,10 +82,6 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	if _, err := db.Exec(notifySchema); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("apply notify schema: %w", err)
-	}
 	if _, err := db.Exec(providerDefsSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("apply provider defs schema: %w", err)
