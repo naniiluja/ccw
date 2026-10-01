@@ -160,8 +160,7 @@ data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"Go
 func TestAnAntigravityAccountSearchesThroughGoogleWhenNothingElseIsSet(t *testing.T) {
 	t.Setenv("CCW_SEARCH_PROVIDER", "")
 	var gotBody string
-	var redirect *httptest.Server
-	redirect = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "https://go.dev/doc/go1.27", http.StatusFound)
 	}))
 	defer redirect.Close()

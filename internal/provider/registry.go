@@ -73,12 +73,6 @@ type Provider struct {
 	Watch bool
 }
 
-// Generic is an OpenAI-compatible upstream that a connection defines itself
-// with its own id and base URL, such as a self-hosted or niche gateway.
-func Generic(id, baseURL string) Provider {
-	return GenericAPI(id, baseURL, "")
-}
-
 // GenericAPI is a custom upstream of a given request shape: "" or "openai"
 // (Chat Completions), "responses" (OpenAI Responses), or "anthropic"
 // (Messages, keyed with x-api-key as Anthropic's API is).

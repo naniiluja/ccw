@@ -83,7 +83,9 @@ func TestPoolKeepsOneSessionPerCallerAcrossGrowingTurns(t *testing.T) {
 		t.Error("two callers share a session even on the same body")
 	}
 	// Without a caller id the body is the key.
-	if p.For("", "", []byte(`{"a":1}`)).ID != p.For("", "", []byte(`{"a":1}`)).ID {
+	once := p.For("", "", []byte(`{"a":1}`))
+	twice := p.For("", "", []byte(`{"a":1}`))
+	if once.ID != twice.ID {
 		t.Error("the same body without a caller got two sessions")
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -248,12 +249,8 @@ func (a *api) providersServing(ctx context.Context, model string) []string {
 	wg.Wait()
 	out := []string{}
 	for i, p := range provs {
-		want := a.variantBase(p, model)
-		for _, id := range lists[i] {
-			if id == want {
-				out = append(out, p)
-				break
-			}
+		if slices.Contains(lists[i], a.variantBase(p, model)) {
+			out = append(out, p)
 		}
 	}
 	return out

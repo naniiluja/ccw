@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -334,11 +335,9 @@ func keyIDOf(resp *http.Response) string {
 // copyHeader relays one upstream header. A request id replaces ccw's own
 // instead of adding a second value.
 func copyHeader(h http.Header, k string, vs []string) {
-	for _, id := range requestIDHeaders {
-		if k == id {
-			h[k] = append([]string(nil), vs...)
-			return
-		}
+	if slices.Contains(requestIDHeaders, k) {
+		h[k] = append([]string(nil), vs...)
+		return
 	}
 	for _, v := range vs {
 		h.Add(k, v)
