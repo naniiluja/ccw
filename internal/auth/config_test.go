@@ -33,7 +33,10 @@ func TestSessionRoundTripThroughConfig(t *testing.T) {
 // A password is not single use: the same one opens a second session.
 func TestCheckPasswordAcceptsTheSamePasswordTwice(t *testing.T) {
 	c := newTestConfig(t)
-	if !c.CheckPassword("test-password-123") || !c.CheckPassword("test-password-123") {
+	if !c.CheckPassword("test-password-123") {
+		t.Fatal("the correct password was refused on the first sign-in")
+	}
+	if !c.CheckPassword("test-password-123") {
 		t.Error("the correct password was refused on a repeated sign-in")
 	}
 }

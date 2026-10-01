@@ -605,12 +605,12 @@ func TestZenSessionsListsWhoHoldsWhat(t *testing.T) {
 	h.ServeHTTP(rec, loopbackRequest("GET", "/api/zen/sessions", nil))
 	var got struct {
 		Count    int
-		Sessions []struct{ Id, Caller, Source string }
+		Sessions []struct{ ID, Caller, Source string }
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || got.Count != 1 {
 		t.Fatalf("%v: %s", err, rec.Body.String())
 	}
-	if s := got.Sessions[0]; s.Caller != "caller-1" || s.Source != "header:x-session-id" || !zen.IsSessionID(s.Id) {
+	if s := got.Sessions[0]; s.Caller != "caller-1" || s.Source != "header:x-session-id" || !zen.IsSessionID(s.ID) {
 		t.Errorf("session = %+v", s)
 	}
 }
