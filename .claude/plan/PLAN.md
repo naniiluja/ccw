@@ -47,7 +47,7 @@ Nguồn: `/Users/naniiluja/.claude/plans/optimized-giggling-gizmo.md`. Mục ti�
 | 024 | Tách `claimReset`, `claudeResetRows`, `quotaFor`, `newServer` | httpapi (refactor) | `go test -race ./...` xanh, gocyclo dưới hoặc bằng 30 | 022 | in-review |
 | 025 | Tách translate phía request | translate | `go test -race ./internal/translate/` xanh | 022 | in-review |
 | 026 | Tách translate phía response và stream | translate | `go test -race` xanh, golden Zen không đổi | 025 | in-review |
-| 027 | Tách các hàm còn vượt 30 | httpapi + provider | `gocyclo -over 30` rỗng | 023, 024, 026 | todo |
+| 027 | Tách các hàm còn vượt 30 | httpapi + provider | `gocyclo -over 30` rỗng | 023, 024, 026 | in-review |
 | 028 | Ép luật bằng công cụ trong CI và `scripts/check.sh` | CI + config + test kiến trúc | `scripts/check.sh` xanh, cố ý vi phạm làm đúng cổng đỏ | 001, 027 | todo |
 | 029 | Bộ luật mới và đồng bộ spec | spec | `CLAUDE.md` dưới 200 dòng và 12KB, mỗi luật ghi cách kiểm | 028 | todo |
 | 030 | Đánh số phiên bản schema bằng `PRAGMA user_version` thay cho nuốt lỗi `duplicate column` (cũ là task 002) | store | `go test ./internal/store/` xanh, gồm test nâng cấp DB cũ | 014 | in-review |
