@@ -37,6 +37,9 @@ Xóa hẳn contract lab (so sánh shape với switcher) cùng cờ `trusted` c�
 - internal/httpapi/mcp.go — bỏ tool contract
 - internal/httpapi/keys.go — bỏ `setKeyTrusted`
 - internal/httpapi/v1_test.go — bỏ nhắc switcher
+- internal/httpapi/driftreview.go — `reviewPending` hết gọi `reviewFindings` của contractreview.go (compiler buộc)
+- internal/httpapi/servertools.go — bỏ đối số `cap` thừa khi gọi `failover` (compiler buộc)
+- internal/httpapi/keys_test.go — test `TestKeyCreationHasNoTrustedFlag`
 - cmd/ccw/main.go, cmd/ccw/main_test.go — bỏ `contract-reset`
 - docs/clients.md — bỏ CC Switch
 
