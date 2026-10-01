@@ -12,14 +12,17 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/naniiluja/ccw/internal/drift"
 	"github.com/naniiluja/ccw/internal/filter"
 	"github.com/naniiluja/ccw/internal/provider"
 	"github.com/naniiluja/ccw/internal/store"
+	"github.com/naniiluja/ccw/internal/translate"
 	"github.com/naniiluja/ccw/internal/usage"
 )
 
@@ -329,4 +332,316 @@ func copyHeader(h http.Header, k string, vs []string) {
 	for _, v := range vs {
 		h.Add(k, v)
 	}
+}
+
+// A request reaches a provider in the provider's own shape. When the caller
+// speaks the same shape, the bytes pass through untouched both ways; that is
+// the point of ccw. The one edit is the model id, which ccw stripped of
+// its provider prefix on the way in and puts back on the way out (replyEditor). Only when the shapes differ is the request translated,
+// with OpenAI Chat Completions as the hub: caller → chat → provider on the way
+// in, provider → chat chunks → caller on the way out.
+
+// clientShape names the shape of a caller's request from its path, or "" for a
+// path ccw forwards untouched (embeddings, …).
+func clientShape(path string) string {
+	switch strings.Trim(path, "/") {
+	case "chat/completions":
+		return translate.OpenAI
+	case "messages":
+		return translate.Anthropic
+	}
+	return ""
+}
+
+// shapeOf names the request shape a provider speaks by default.
+func shapeOf(p provider.Provider) string {
+	if p.API == "" {
+		return translate.OpenAI
+	}
+	return p.API
+}
+
+// copilotResponsesModels are the Copilot models learned to answer only on
+// /responses: Copilot says so with a 400, and the call is retried there.
+var copilotResponsesModels sync.Map
+
+var copilotClaude = regexp.MustCompile(`(?i)claude`)
+
+// shapeFor names the shape and endpoint path a provider takes for one model.
+func shapeFor(p provider.Provider, model string) (shape, path string) {
+	if p.Exchange == "copilot" {
+		if copilotClaude.MatchString(model) {
+			return translate.Anthropic, "v1/messages"
+		}
+		if _, ok := copilotResponsesModels.Load(model); ok {
+			return translate.Responses, "responses"
+		}
+	}
+	switch s := shapeOf(p); s {
+	case translate.Antigravity:
+		return s, "v1internal:streamGenerateContent?alt=sse"
+	case translate.Anthropic:
+		return s, "messages"
+	case translate.Responses:
+		return s, "responses"
+	case translate.OpenAI:
+		return s, "chat/completions"
+	default:
+		return s, ""
+	}
+}
+
+// translatable reports whether ccw can reach a provider shape from a caller.
+func translatable(shape string) bool {
+	switch shape {
+	case translate.OpenAI, translate.Anthropic, translate.Responses, translate.Antigravity:
+		return true
+	}
+	return false
+}
+
+// toProvider converts a caller's request to the provider's shape.
+func toProvider(body []byte, client, want string) ([]byte, error) {
+	hub := body
+	var err error
+	switch client {
+	case translate.Anthropic:
+		hub, err = translate.AnthropicToOpenAI(body)
+	}
+	if err != nil {
+		return nil, err
+	}
+	switch want {
+	case translate.Anthropic:
+		return translate.OpenAIToAnthropic(hub)
+	case translate.Responses:
+		return translate.OpenAIToResponses(hub)
+	}
+	return hub, nil
+}
+
+// alwaysStreams reports whether a provider shape is only ever called streaming.
+func alwaysStreams(shape string) bool {
+	switch shape {
+	case translate.Responses, translate.Antigravity, translate.Zen, translate.ZenResponses:
+		return true
+	}
+	return false
+}
+
+// maxTranslatedBody bounds a whole (non-streamed) response read for translation.
+const maxTranslatedBody = 32 << 20
+
+// relayVia answers the caller in its own shape (to) from a response in the
+// provider's shape (via). stream is what the caller asked for; reply says what
+// a Messages caller's answer must carry.
+func (a *api) relayVia(w http.ResponseWriter, resp *http.Response, connID, to, via string, stream bool, reply translate.Reply, provider, path string) {
+	a.rate.capture(connID, resp.Header)
+	for k, vs := range resp.Header {
+		if hopByHop[k] || k == "Content-Length" || k == "Content-Type" || k == "Content-Encoding" {
+			continue
+		}
+		copyHeader(w.Header(), k, vs)
+	}
+	// Codex (the provider) streams its events under a Content-Type of application/json, so a
+	// shape that only ever streams is read as a stream whatever the header says.
+	isSSE := strings.Contains(resp.Header.Get("Content-Type"), "event-stream") || alwaysStreams(via)
+	if resp.StatusCode >= 400 || !isSSE {
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxTranslatedBody))
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "cannot read the upstream answer")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		// An error body under 200 is still an error: the caller's SDK would
+		// otherwise read it as an answer.
+		status := resp.StatusCode
+		if status < 400 && isErrorBody(body) {
+			status = http.StatusBadGateway
+		}
+		if via == translate.Zen || via == translate.ZenResponses {
+			status, body = translate.ZenStatus(status, body)
+		}
+		if status >= 400 {
+			w.WriteHeader(status)
+			w.Write(translate.Error(status, body, to))
+			return
+		}
+		out, err := wholeToClient(body, via, to, reply)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "cannot translate the upstream answer")
+			return
+		}
+		w.WriteHeader(resp.StatusCode)
+		w.Write(out)
+		a.recordUsage(connID, keyIDOf(resp), body, "")
+		if watched(provider) {
+			a.drift.Observe(drift.Response, provider, path, body, false)
+		}
+		return
+	}
+
+	// Stream: provider events → chat chunks (in a goroutine) → the caller.
+	// The provider's own bytes are tapped too, for the drift observer.
+	raw := &respTap{headLimit: usageTapHeadLimit, tailLimit: usageTapTailLimit}
+	pr, pw := io.Pipe()
+	go func() {
+		defer pw.Close()
+		a.toChatChunks(pipeFlusher{pw}, io.TeeReader(resp.Body, tapWriter{raw}), via)
+	}()
+	tap := &respTap{headLimit: usageTapHeadLimit, tailLimit: usageTapTailLimit}
+	chunks := io.TeeReader(pr, tapWriter{tap})
+	out := flushWriter{w: w, rc: http.NewResponseController(w)}
+	switch {
+	case stream && to == translate.OpenAI:
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(resp.StatusCode)
+		copyFlushing(out, chunks)
+	case stream:
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(resp.StatusCode)
+		translate.OpenAIStreamToAnthropic(out, chunks, reply)
+	default:
+		whole := collectChunks(via, chunks)
+		status := resp.StatusCode
+		// A provider can stream an error event inside an HTTP 200. The collected
+		// body is then an error, not an answer, so the caller must not see 200.
+		if status < 400 && isErrorBody(whole) {
+			status = http.StatusBadGateway
+		}
+		switch {
+		case to == translate.Anthropic:
+			if b, err := translate.OpenAIResponseToAnthropic(whole, reply); err == nil {
+				whole = b
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		w.Write(whole)
+	}
+	// Close the read end rather than drain it. On a normal finish the reader is
+	// already at EOF; on a client disconnect a drain would block on the producer
+	// still reading a slow upstream, so close it and let the deferred
+	// resp.Body.Close release that goroutine.
+	pr.Close()
+	a.recordUsage(connID, keyIDOf(resp), tap.bytes(), "")
+	if resp.StatusCode < 300 && watched(provider) {
+		a.drift.Observe(drift.Response, provider, path, raw.bytes(), true)
+	}
+}
+
+// isErrorBody reports whether a JSON body is an error envelope: a top-level
+// "error" key, which a provider streams instead of a completion when it fails.
+func isErrorBody(b []byte) bool {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(b, &m) != nil {
+		return false
+	}
+	_, ok := m["error"]
+	return ok
+}
+
+// toChatChunks converts a provider's event stream to Chat Completions chunks.
+func (a *api) toChatChunks(dst translate.Flusher, src io.Reader, via string) {
+	switch via {
+	case translate.Antigravity:
+		translate.GeminiStreamToOpenAI(dst, src, &a.sigs)
+	case translate.Anthropic:
+		translate.AnthropicStreamToOpenAI(dst, src)
+	case translate.Responses:
+		translate.ResponsesStreamToOpenAI(dst, src)
+	case translate.Zen:
+		translate.ZenStreamToOpenAI(dst, src)
+	case translate.ZenResponses:
+		translate.ZenResponsesStreamToOpenAI(dst, src)
+	default:
+		io.Copy(dst, src)
+	}
+}
+
+// wholeToClient converts a whole (non-streamed) response.
+func wholeToClient(body []byte, via, to string, reply translate.Reply) ([]byte, error) {
+	hub := body
+	if via == translate.Anthropic {
+		var err error
+		if hub, err = translate.AnthropicResponseToOpenAI(body); err != nil {
+			return nil, err
+		}
+	}
+	switch to {
+	case translate.Anthropic:
+		return translate.OpenAIResponseToAnthropic(hub, reply)
+	}
+	return hub, nil
+}
+
+func copyFlushing(dst flushWriter, src io.Reader) error {
+	buf := make([]byte, 32<<10)
+	for {
+		n, err := src.Read(buf)
+		if n > 0 {
+			if _, werr := dst.Write(buf[:n]); werr != nil {
+				return werr
+			}
+			dst.Flush()
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+	}
+}
+
+// pipeFlusher lets a stream converter write into a pipe.
+type pipeFlusher struct{ w *io.PipeWriter }
+
+func (p pipeFlusher) Write(b []byte) (int, error) { return p.w.Write(b) }
+func (p pipeFlusher) Flush() error                { return nil }
+
+// tapWriter feeds a respTap from a TeeReader.
+type tapWriter struct{ t *respTap }
+
+func (t tapWriter) Write(p []byte) (int, error) { t.t.write(p); return len(p), nil }
+
+// flushWriter writes to the caller and flushes each write, so a translated
+// stream reaches the caller as it is produced.
+type flushWriter struct {
+	w  http.ResponseWriter
+	rc *http.ResponseController
+}
+
+func (f flushWriter) Write(p []byte) (int, error) { return f.w.Write(p) }
+
+// Flush ignores a writer that cannot flush; the bytes still arrive at the end.
+func (f flushWriter) Flush() error { f.rc.Flush(); return nil }
+
+// anyAnthropic reports whether one of the accounts speaks the Anthropic shape.
+func (a *api) anyAnthropic(targets []store.Connection) bool {
+	for _, c := range targets {
+		if p, ok := a.providerFor(c); ok && shapeOf(p) == translate.Anthropic {
+			return true
+		}
+	}
+	return false
+}
+
+// countTokensEstimate answers Anthropic's count_tokens for a provider that has
+// no such endpoint, with the usual four characters per token. Clients use it to
+// size a context, so an estimate serves them better than an error.
+func countTokensEstimate(w http.ResponseWriter, body []byte) {
+	writeJSON(w, map[string]any{"input_tokens": translate.EstimateTokens(body)})
+}
+
+// collectChunks folds chat chunks into one answer. The free tier's own answer
+// carries more than the plain fold keeps (reasoning under every name, kept
+// fields), so it has its own.
+func collectChunks(via string, chunks io.Reader) []byte {
+	if via == translate.Zen || via == translate.ZenResponses {
+		return translate.CollectZenStream(chunks)
+	}
+	return translate.CollectOpenAIStream(chunks)
 }

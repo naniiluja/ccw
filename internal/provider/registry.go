@@ -116,7 +116,7 @@ const claudeBeta = "claude-code-20250219,oauth-2025-04-20,context-1m-2025-08-07,
 var registry = map[string]Provider{
 	// GitHub Copilot, as the VS Code Copilot Chat extension reaches it. The
 	// stored credential is the GitHub OAuth token (gho_…); it is traded for a
-	// short-lived Copilot token before each call (see internal/httpapi/copilot.go).
+	// short-lived Copilot token before each call (see internal/httpapi/providers.go).
 	"github": {
 		ID:         "github",
 		BaseURL:    "https://api.githubcopilot.com",
