@@ -23,6 +23,9 @@ Mọi dòng log phát sinh trong một request `/v1` mang `req_id` trùng với 
 - `TestServerHasIdleTimeout`: đọc cấu hình server dựng bởi hàm khởi tạo (tách hàm dựng `http.Server` ra khỏi `main` nếu cần) và khẳng định `IdleTimeout > 0` và `WriteTimeout == 0`.
 
 ## Files to touch
+- internal/httpapi/accounts.go, internal/httpapi/drift.go, internal/httpapi/errreview.go, internal/httpapi/filters.go, internal/httpapi/models.go, internal/httpapi/quota_resets.go — chuyển nốt `log.Printf` sang `slog`
+- internal/httpapi/usage_log_test.go — viết lại test nhận logger qua tham số
+- internal/drift/observer.go, internal/zen/systemone.go — package lá còn `log.Printf`, dùng `slog` cấp package
 - `internal/httpapi/server.go` — `v1API` đặt request ID vào context, hàm lấy logger từ context (sau task 020, `apierror.go` đã gộp vào `server.go`).
 - `internal/httpapi/v1.go`, `internal/httpapi/proxy.go`, `internal/httpapi/providers.go`, `internal/httpapi/oauth.go`, `internal/httpapi/websearch.go` và các file khác còn `log.Printf` (tên file là tên sau các task gộp 020 đến 022) — chuyển sang `slog`.
 - `cmd/ccw/main.go` — khởi tạo logger mặc định (đề xuất `slog.NewJSONHandler` ra stderr) và thêm `IdleTimeout`.
