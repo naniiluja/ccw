@@ -9,17 +9,18 @@ import (
 	"time"
 )
 
-// The login takes a 6-digit TOTP code and nothing else, and three time windows
-// are accepted, so one guess matches with p = 3/10^6. The public budget admits
-// at most loginPublicMax wrong codes per loginPublicWin: 100 a day, so 3000 in
-// 30 days and p = 0.009 for a caller that rotates its address. Every attempt is
-// charged before the code is checked, so a concurrent burst cannot pass the cap.
+// The login takes a password of at least auth.MinPasswordLength characters and
+// nothing else. The public budget admits at most loginPublicMax wrong passwords
+// per loginPublicWin: 100 a day, so 3000 in 30 days for a caller that rotates
+// its address, against at least 26^12 candidates for the weakest accepted
+// password. Every attempt is charged before the password is checked, so a
+// concurrent burst cannot pass the cap.
 const (
-	loginPerIPMax  = 5                // wrong codes from one public address ...
+	loginPerIPMax  = 5                // wrong passwords from one public address ...
 	loginPerIPWin  = 15 * time.Minute // ... inside this window
-	loginDeviceMax = 10               // wrong codes from one known browser ...
+	loginDeviceMax = 10               // wrong passwords from one known browser ...
 	loginDeviceWin = 24 * time.Hour   // ... inside this window
-	loginPublicMax = 100              // wrong codes from all public addresses ...
+	loginPublicMax = 100              // wrong passwords from all public addresses ...
 	loginPublicWin = 24 * time.Hour   // ... inside this rolling window
 )
 
@@ -49,9 +50,9 @@ type loginSource struct {
 
 type loginGuard struct {
 	mu     sync.Mutex
-	perIP  map[string][]time.Time // wrong codes per public address
-	device map[string][]time.Time // wrong codes per known browser
-	public []time.Time            // wrong codes from all public addresses
+	perIP  map[string][]time.Time // wrong passwords per public address
+	device map[string][]time.Time // wrong passwords per known browser
+	public []time.Time            // wrong passwords from all public addresses
 	// ownerLoopback enables laneLocal. Set it only when every proxy in front of
 	// ccw names the caller in a forwarding header.
 	ownerLoopback bool
@@ -62,10 +63,11 @@ func newLoginGuard() *loginGuard {
 		ownerLoopback: os.Getenv("CCW_OWNER_LOOPBACK") == "1"}
 }
 
-// reserve charges one attempt to the source's budget BEFORE the code is checked.
-// The charge and the test happen under one lock, so a burst of requests cannot
-// get more code checks than the cap. A correct code gives the charge back with
-// refund. When the answer is false, the duration is the wait before a retry.
+// reserve charges one attempt to the source's budget BEFORE the password is
+// checked. The charge and the test happen under one lock, so a burst of
+// requests cannot get more password checks than the cap. A correct password
+// gives the charge back with refund. When the answer is false, the duration is
+// the wait before a retry.
 func (g *loginGuard) reserve(src loginSource, now time.Time) (bool, time.Duration) {
 	if src.lane == laneLocal {
 		return true, 0
@@ -97,7 +99,7 @@ func (g *loginGuard) reserve(src loginSource, now time.Time) (bool, time.Duratio
 	return true, 0
 }
 
-// refund gives back the charge of a correct code. The public budget gives back
+// refund gives back the charge of a correct password. The public budget gives back
 // one charge and not the whole window, so a stranger's failures stay counted.
 func (g *loginGuard) refund(src loginSource) {
 	if src.lane == laneLocal {
@@ -149,7 +151,7 @@ func windowWait(times []time.Time, now time.Time, win time.Duration) time.Durati
 
 // loginSourceOf decides which budget pays for an attempt. It reads the
 // connection, the presence of the forwarding headers and the device cookie's
-// signature. It never reads the code and never trusts a header's value, so a
+// signature. It never reads the password and never trusts a header's value, so a
 // stranger cannot take the owner's lane and the owner cannot lose it.
 func loginSourceOf(r *http.Request, deviceID func(string) (string, bool), ownerLoopback bool) loginSource {
 	forwarded := r.Header.Get("CF-Connecting-IP") != "" || r.Header.Get("X-Forwarded-For") != ""

@@ -12,8 +12,22 @@ import (
 	"github.com/naniiluja/ccw/internal/store"
 )
 
+// testPassword opens the gate that authConfig builds. testPasswordHash is its
+// PBKDF2 hash at 1000 iterations instead of the production 600000: the count
+// is part of the hash, so the same verify path runs, and the tests that send a
+// hundred wrong passwords stay fast under -race.
+const (
+	testPassword     = "test-password-123"
+	testPasswordHash = "pbkdf2-sha256$1000$4yWu3QC0zOyO8JN/Wt1uzg$KprRgoM/MhgSr49JqucktkJA7D0kzJnL+LVrbl0Moo0"
+)
+
 func authConfig() *auth.Config {
-	return auth.NewConfig("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", "machine-tok", []byte("k"), 3600)
+	return auth.NewConfig(testPasswordHash, "machine-tok", []byte("k"), 3600)
+}
+
+// loginForm is the body a browser sends to POST /login.
+func loginForm(password string) string {
+	return url.Values{"password": {password}}.Encode()
 }
 
 func TestBrowserRoutesRequireSession(t *testing.T) {
@@ -30,15 +44,13 @@ func TestBrowserRoutesRequireSession(t *testing.T) {
 	}
 }
 
-func TestLoginWithCodeThenReachDashboard(t *testing.T) {
+func TestLoginWithPasswordThenReachDashboard(t *testing.T) {
 	s, _ := store.Open(filepath.Join(t.TempDir(), "t.db"))
 	defer s.Close()
-	cfg := authConfig()
-	h := NewWithAuth(s, nil, cfg)
+	h := NewWithAuth(s, nil, authConfig())
 
-	form := url.Values{"totp": {auth.TOTPNow(cfg.TOTPSecret)}}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/login", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest("POST", "/login", strings.NewReader(loginForm(testPassword)))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusFound {
@@ -58,17 +70,58 @@ func TestLoginWithCodeThenReachDashboard(t *testing.T) {
 	}
 }
 
-func TestLoginRejectsWrongCode(t *testing.T) {
+func TestLoginRejectsAWrongPasswordWith401(t *testing.T) {
 	s, _ := store.Open(filepath.Join(t.TempDir(), "t.db"))
 	defer s.Close()
 	h := NewWithAuth(s, nil, authConfig())
-	form := url.Values{"totp": {"000000"}}
+	for _, wrong := range []string{"", "wrong-password-1", testPassword + "x", testPassword[:len(testPassword)-1]} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/login", strings.NewReader(loginForm(wrong)))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("password %q: code=%d, want 401", wrong, rec.Code)
+		}
+		if len(rec.Result().Cookies()) > 0 {
+			t.Errorf("password %q produced a cookie", wrong)
+		}
+	}
+}
+
+// The old form field no longer signs in, even with the right value.
+func TestLoginIgnoresTheOldCodeField(t *testing.T) {
+	s, _ := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	defer s.Close()
+	h := NewWithAuth(s, nil, authConfig())
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/login", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest("POST", "/login", strings.NewReader(url.Values{"totp": {testPassword}}.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	h.ServeHTTP(rec, req)
-	if rec.Code == http.StatusFound || len(rec.Result().Cookies()) > 0 {
-		t.Error("wrong code produced a session")
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("the old field: code=%d, want 401", rec.Code)
+	}
+}
+
+// After loginPerIPMax wrong passwords from one address the next attempt gets
+// 429 with Retry-After, and even the right password waits for the window.
+func TestLoginIsRateLimitedAfterRepeatedFailures(t *testing.T) {
+	t.Setenv("CCW_OWNER_LOOPBACK", "")
+	h := NewWithAuth(openStore(t), nil, authConfig())
+	head := map[string]string{"CF-Connecting-IP": "198.51.100.77"}
+	for i := 1; i <= loginPerIPMax; i++ {
+		if rec := send(h, loginPost("wrong-password-1", addrTunnel, head)); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("wrong password %d: code=%d, want 401", i, rec.Code)
+		}
+	}
+	rec := send(h, loginPost(testPassword, addrTunnel, head))
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("attempt %d: code=%d, want 429", loginPerIPMax+1, rec.Code)
+	}
+	if rec.Header().Get("Retry-After") == "" {
+		t.Error("429 without Retry-After")
+	}
+	if cookieNamed(rec, sessionCookie) != nil {
+		t.Error("a rate-limited attempt opened a session")
 	}
 }
 

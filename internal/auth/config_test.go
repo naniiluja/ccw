@@ -1,32 +1,16 @@
 package auth
 
 import (
-	"strings"
 	"testing"
 )
 
-func newTestConfig() *Config {
-	return &Config{
-		TOTPSecret: "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
-		APIToken:   "machine-token-abc",
-		sessionKey: []byte("k"),
-		ttlSeconds: 3600,
-	}
-}
-
-func TestCheckCodeUsesTOTP(t *testing.T) {
-	c := newTestConfig()
-	code, _ := totpAt(c.TOTPSecret, nowUnix())
-	if !c.CheckCode(code) {
-		t.Error("correct TOTP was rejected")
-	}
-	if c.CheckCode("000000") {
-		t.Error("wrong TOTP accepted")
-	}
+func newTestConfig(t *testing.T) *Config {
+	t.Helper()
+	return cheapConfig(t, "test-password-123")
 }
 
 func TestCheckAPIToken(t *testing.T) {
-	c := newTestConfig()
+	c := newTestConfig(t)
 	if !c.CheckAPIToken("Bearer machine-token-abc") {
 		t.Error("correct bearer token rejected")
 	}
@@ -36,7 +20,7 @@ func TestCheckAPIToken(t *testing.T) {
 }
 
 func TestSessionRoundTripThroughConfig(t *testing.T) {
-	c := newTestConfig()
+	c := newTestConfig(t)
 	tok := c.IssueSession()
 	if !c.ValidSession(tok) {
 		t.Error("issued session did not validate")
@@ -46,34 +30,16 @@ func TestSessionRoundTripThroughConfig(t *testing.T) {
 	}
 }
 
-// A code opens one session. The step it belongs to is recorded, so the same
-// code inside its window is refused afterwards.
-func TestCheckCodeIsSingleUse(t *testing.T) {
-	c := newTestConfig()
-	code, _ := totpAt(c.TOTPSecret, nowUnix())
-	if !c.CheckCode(code) {
-		t.Fatal("first use of a correct code was rejected")
-	}
-	if c.CheckCode(code) {
-		t.Error("the same code was accepted twice")
-	}
-}
-
-func TestCheckCodeRefusesAnOlderStep(t *testing.T) {
-	c := newTestConfig()
-	now := nowUnix()
-	next, _ := totpAt(c.TOTPSecret, now+totpStep)
-	if !c.checkCodeAt(next, now) {
-		t.Fatal("the code of the next window was rejected")
-	}
-	current, _ := totpAt(c.TOTPSecret, now)
-	if c.checkCodeAt(current, now) {
-		t.Error("a code from an older step was accepted after a newer one")
+// A password is not single use: the same one opens a second session.
+func TestCheckPasswordAcceptsTheSamePasswordTwice(t *testing.T) {
+	c := newTestConfig(t)
+	if !c.CheckPassword("test-password-123") || !c.CheckPassword("test-password-123") {
+		t.Error("the correct password was refused on a repeated sign-in")
 	}
 }
 
 func TestDeviceCookieRoundTrip(t *testing.T) {
-	c := newTestConfig()
+	c := newTestConfig(t)
 	value := c.IssueDevice()
 	id, ok := c.DeviceID(value)
 	if !ok || id == "" {
@@ -82,7 +48,7 @@ func TestDeviceCookieRoundTrip(t *testing.T) {
 	if again, _ := c.DeviceID(c.IssueDevice()); again == id {
 		t.Error("two devices got the same id")
 	}
-	other := NewConfig(c.TOTPSecret, c.APIToken, []byte("another-key"), 3600)
+	other := NewConfig(c.passwordHash, c.APIToken, []byte("another-key"), 3600)
 	for _, bad := range []string{"", "no-dot", id, id + ".", id + ".00", value + "x", "x" + value} {
 		if _, ok := c.DeviceID(bad); ok {
 			t.Errorf("DeviceID accepted a forged value %q", bad)
@@ -93,37 +59,23 @@ func TestDeviceCookieRoundTrip(t *testing.T) {
 	}
 }
 
-func TestFromEnvRefusesASecretThatDoesNotDecode(t *testing.T) {
-	t.Setenv("CCW_TOTP_SECRET", "this is not base32!")
-	cfg, err := FromEnv()
-	if err == nil {
-		t.Fatal("a secret that does not decode was accepted")
+// FromHash reads the session settings from the environment as before.
+func TestFromHashReadsTheSessionEnvironment(t *testing.T) {
+	hash, err := hashPassword("test-password-123", testIterations)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if cfg != nil {
-		t.Error("FromEnv returned a config with a bad secret")
+	t.Setenv("CCW_API_TOKEN", "env-token")
+	t.Setenv("CCW_SESSION_TTL", "120")
+	t.Setenv("CCW_SESSION_KEY", "env-key")
+	c, err := FromHash(hash)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "CCW_TOTP_SECRET") {
-		t.Errorf("message %q does not name the variable", err)
+	if c.APIToken != "env-token" || c.TTLSeconds() != 120 || string(c.sessionKey) != "env-key" {
+		t.Errorf("FromHash: token=%q ttl=%d key=%q", c.APIToken, c.TTLSeconds(), c.sessionKey)
 	}
-}
-
-func TestFromEnvAcceptsAnUnpaddedSecret(t *testing.T) {
-	// 16 bytes of base32 need padding; an authenticator app shows none.
-	const unpadded = "AEBAGBAFAYDQQCIKBMGA2DQPCA"
-	t.Setenv("CCW_TOTP_SECRET", unpadded)
-	cfg, err := FromEnv()
-	if err != nil || cfg == nil {
-		t.Fatalf("FromEnv with an unpadded secret: cfg=%v err=%v", cfg, err)
-	}
-	if !cfg.CheckCode(TOTPNow(unpadded)) {
-		t.Error("a code from an unpadded secret was rejected")
-	}
-}
-
-func TestFromEnvWithNoSecretLeavesTheServerOpen(t *testing.T) {
-	t.Setenv("CCW_TOTP_SECRET", "")
-	cfg, err := FromEnv()
-	if cfg != nil || err != nil {
-		t.Fatalf("FromEnv with no secret: cfg=%v err=%v, want nil nil", cfg, err)
+	if !c.CheckPassword("test-password-123") {
+		t.Error("FromHash config refused its password")
 	}
 }

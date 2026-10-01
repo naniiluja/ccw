@@ -4,12 +4,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/naniiluja/ccw/internal/auth"
 	"github.com/naniiluja/ccw/internal/store"
 )
 
@@ -177,8 +175,7 @@ func TestAuthOnKeepsAPublicHost(t *testing.T) {
 		t.Errorf("GET /accounts with no session: code=%d loc=%q, want 302 -> /login", rec.Code, rec.Header().Get("Location"))
 	}
 
-	form := url.Values{"totp": {auth.TOTPNow(cfg.TOTPSecret)}}
-	lr := guardReq("POST", "/login", "ccw.example", strings.NewReader(form.Encode()))
+	lr := guardReq("POST", "/login", "ccw.example", strings.NewReader(loginForm(testPassword)))
 	lr.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	lr.Header.Set("Origin", "https://ccw.example")
 	login := serveGuard(h, lr)

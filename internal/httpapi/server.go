@@ -48,7 +48,7 @@ type api struct {
 	review reviewState
 	// errReview is the error review's state.
 	errReview reviewState
-	// login caps failed sign-in attempts so the TOTP code cannot be brute forced.
+	// login caps failed sign-in attempts so the password cannot be brute forced.
 	login *loginGuard
 	// refresh serializes OAuth token refreshes per connection.
 	refresh refreshLocks
@@ -68,7 +68,7 @@ func New(s *store.Store, baseOverride map[string]string) http.Handler {
 }
 
 // NewWithAuth builds the route table. When authCfg is not nil, a person must log
-// in with a TOTP code to reach the dashboard, and a machine must present the
+// in with the password to reach the dashboard, and a machine must present the
 // master token or a dashboard key. Only the session and the master token are admin.
 func NewWithAuth(s *store.Store, baseOverride map[string]string, authCfg *auth.Config) http.Handler {
 	_, h := newServer(s, baseOverride, authCfg)
