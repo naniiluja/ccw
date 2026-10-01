@@ -42,8 +42,8 @@ Nguồn: `/Users/naniiluja/.claude/plans/optimized-giggling-gizmo.md`. Mục ti�
 | 019 | Chuyển loginguard vào `internal/auth` | auth + httpapi | test loginguard xanh ở `auth`, ngưỡng không đổi | 018 | in-review |
 | 020 | Gộp file httpapi nhóm A (server, auth, oauth, tài khoản, key, filter) | httpapi | `go test -race ./...` xanh, một `// Package httpapi` | 016, 019 | in-review |
 | 021 | Gộp file httpapi nhóm B (model, proxy, provider adapter, web search) | httpapi | `go test -race ./...` xanh, file dưới 1000 dòng | 020 | in-review |
-| 022 | Gộp quota, drift và heal | httpapi + translate | `go test -race ./...` xanh | 021 | todo |
-| 023 | Tách `failover`, `v1`, `relayVia` thành các bước tên rõ | httpapi (refactor) | `go test -race -count=3` xanh, golden Zen không đổi, gocyclo dưới hoặc bằng 30 | 021 | todo |
+| 022 | Gộp quota, drift và heal | httpapi + translate | `go test -race ./...` xanh | 021 | in-review |
+| 023 | Tách `failover`, `v1`, `relayVia` thành các bước tên rõ | httpapi (refactor) | `go test -race -count=3` xanh, golden Zen không đổi, gocyclo dưới hoặc bằng 30 | 021 | in-review |
 | 024 | Tách `claimReset`, `claudeResetRows`, `quotaFor`, `newServer` | httpapi (refactor) | `go test -race ./...` xanh, gocyclo dưới hoặc bằng 30 | 022 | todo |
 | 025 | Tách translate phía request | translate | `go test -race ./internal/translate/` xanh | 022 | todo |
 | 026 | Tách translate phía response và stream | translate | `go test -race` xanh, golden Zen không đổi | 025 | todo |
