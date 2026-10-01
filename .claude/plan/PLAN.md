@@ -48,10 +48,10 @@ Nguồn: `/Users/naniiluja/.claude/plans/optimized-giggling-gizmo.md`. Mục ti�
 | 025 | Tách translate phía request | translate | `go test -race ./internal/translate/` xanh | 022 | in-review |
 | 026 | Tách translate phía response và stream | translate | `go test -race` xanh, golden Zen không đổi | 025 | in-review |
 | 027 | Tách các hàm còn vượt 30 | httpapi + provider | `gocyclo -over 30` rỗng | 023, 024, 026 | in-review |
-| 028 | Ép luật bằng công cụ trong CI và `scripts/check.sh` | CI + config + test kiến trúc | `scripts/check.sh` xanh, cố ý vi phạm làm đúng cổng đỏ | 001, 027 | todo |
+| 028 | Ép luật bằng công cụ trong CI và `scripts/check.sh` | CI + config + test kiến trúc | `scripts/check.sh` xanh, cố ý vi phạm làm đúng cổng đỏ | 001, 027 | in-review |
 | 029 | Bộ luật mới và đồng bộ spec | spec | `CLAUDE.md` dưới 200 dòng và 12KB, mỗi luật ghi cách kiểm | 028 | todo |
 | 030 | Đánh số phiên bản schema bằng `PRAGMA user_version` thay cho nuốt lỗi `duplicate column` (cũ là task 002) | store | `go test ./internal/store/` xanh, gồm test nâng cấp DB cũ | 014 | in-review |
-| 031 | `log/slog` có request ID xuyên suốt `/v1` và `IdleTimeout` cho server (cũ là task 003) | httpapi + cmd | `go test ./internal/httpapi/ ./cmd/ccw/` xanh, test khẳng định dòng log mang `req_id` | 027, 019 | todo |
+| 031 | `log/slog` có request ID xuyên suốt `/v1` và `IdleTimeout` cho server (cũ là task 003) | httpapi + cmd | `go test ./internal/httpapi/ ./cmd/ccw/` xanh, test khẳng định dòng log mang `req_id` | 027, 019 | in-review |
 
 ## Ngoài plan
 - `README.md`, `SECURITY.md`, `docs/*.md` đã bị xóa có chủ đích; các test và bước đóng gói npm phụ thuộc vào chúng đã được gỡ, `go test ./...` xanh.
