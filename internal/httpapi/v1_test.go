@@ -218,8 +218,8 @@ func TestCustomAnthropicProviderUsesXAPIKeyAndMessages(t *testing.T) {
 	}
 }
 
-// /v1/models carries each model's token limits, so a client such as
-// llm-switcher can refuse a 1M context the model does not have.
+// /v1/models carries each model's token limits, so a client can refuse a 1M
+// context the model does not have.
 func TestV1ModelsCarryTokenLimits(t *testing.T) {
 	f := &fakeProvider{models: `{"data":[{"id":"big","context_length":1048576,"top_provider":{"max_completion_tokens":65536}},{"id":"small","context_length":200000},{"id":"bare"}]}`}
 	s, _ := store.Open(filepath.Join(t.TempDir(), "t.db"))

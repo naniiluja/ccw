@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/naniiluja/ccw/internal/contract"
 	"github.com/naniiluja/ccw/internal/drift"
 	"github.com/naniiluja/ccw/internal/provider"
 	"github.com/naniiluja/ccw/internal/store"
@@ -117,7 +116,7 @@ const maxTranslatedBody = 32 << 20
 // relayVia answers the caller in its own shape (to) from a response in the
 // provider's shape (via). stream is what the caller asked for; reply says what
 // a Messages caller's answer must carry.
-func (a *api) relayVia(w http.ResponseWriter, resp *http.Response, connID, to, via string, stream bool, reply translate.Reply, provider, path string, cap *contract.Capture) {
+func (a *api) relayVia(w http.ResponseWriter, resp *http.Response, connID, to, via string, stream bool, reply translate.Reply, provider, path string) {
 	a.rate.capture(connID, resp.Header)
 	for k, vs := range resp.Header {
 		if hopByHop[k] || k == "Content-Length" || k == "Content-Type" || k == "Content-Encoding" {
@@ -130,15 +129,6 @@ func (a *api) relayVia(w http.ResponseWriter, resp *http.Response, connID, to, v
 	isSSE := strings.Contains(resp.Header.Get("Content-Type"), "event-stream") || alwaysStreams(via)
 	if resp.StatusCode >= 400 || !isSSE {
 		body, err := io.ReadAll(io.LimitReader(resp.Body, maxTranslatedBody))
-		if cap != nil {
-			if err != nil {
-				close(cap.ProducerDone)
-				_ = cap.Seal(false, nil, err)
-			} else {
-				cap.WriteResp(body)
-				close(cap.ProducerDone)
-			}
-		}
 		if err != nil {
 			writeError(w, http.StatusBadGateway, "cannot read the upstream answer")
 			return
@@ -155,25 +145,16 @@ func (a *api) relayVia(w http.ResponseWriter, resp *http.Response, connID, to, v
 		}
 		if status >= 400 {
 			w.WriteHeader(status)
-			_, writeErr := w.Write(translate.Error(status, body, to))
-			if cap != nil {
-				_ = cap.Seal(false, writeErr, nil)
-			}
+			w.Write(translate.Error(status, body, to))
 			return
 		}
 		out, err := wholeToClient(body, via, to, reply)
 		if err != nil {
-			if cap != nil {
-				_ = cap.Seal(false, nil, err)
-			}
 			writeError(w, http.StatusBadGateway, "cannot translate the upstream answer")
 			return
 		}
 		w.WriteHeader(resp.StatusCode)
-		_, writeErr := w.Write(out)
-		if cap != nil {
-			_ = cap.Seal(false, writeErr, nil)
-		}
+		w.Write(out)
 		a.recordUsage(connID, keyIDOf(resp), body, "")
 		if watched(provider) {
 			a.drift.Observe(drift.Response, provider, path, body, false)
@@ -187,32 +168,22 @@ func (a *api) relayVia(w http.ResponseWriter, resp *http.Response, connID, to, v
 	pr, pw := io.Pipe()
 	go func() {
 		defer pw.Close()
-		if cap != nil {
-			defer close(cap.ProducerDone)
-		}
-		var src io.Reader = resp.Body
-		if cap != nil {
-			src = io.TeeReader(resp.Body, captureWriter{cap: cap})
-		}
-		a.toChatChunks(pipeFlusher{pw}, io.TeeReader(src, tapWriter{raw}), via)
+		a.toChatChunks(pipeFlusher{pw}, io.TeeReader(resp.Body, tapWriter{raw}), via)
 	}()
 	tap := &respTap{headLimit: usageTapHeadLimit, tailLimit: usageTapTailLimit}
 	chunks := io.TeeReader(pr, tapWriter{tap})
 	out := flushWriter{w: w, rc: http.NewResponseController(w)}
-	var clientErr error
 	switch {
 	case stream && to == translate.OpenAI:
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.WriteHeader(resp.StatusCode)
-		clientErr = copyFlushing(out, chunks)
+		copyFlushing(out, chunks)
 	case stream:
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.WriteHeader(resp.StatusCode)
-		ef := &errFlusher{flushWriter: out}
-		translate.OpenAIStreamToAnthropic(ef, chunks, reply)
-		clientErr = ef.err
+		translate.OpenAIStreamToAnthropic(out, chunks, reply)
 	default:
 		whole := collectChunks(via, chunks)
 		status := resp.StatusCode
@@ -229,16 +200,13 @@ func (a *api) relayVia(w http.ResponseWriter, resp *http.Response, connID, to, v
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
-		_, clientErr = w.Write(whole)
+		w.Write(whole)
 	}
 	// Close the read end rather than drain it. On a normal finish the reader is
 	// already at EOF; on a client disconnect a drain would block on the producer
 	// still reading a slow upstream, so close it and let the deferred
 	// resp.Body.Close release that goroutine.
 	pr.Close()
-	if cap != nil {
-		_ = cap.Seal(true, clientErr, nil)
-	}
 	a.recordUsage(connID, keyIDOf(resp), tap.bytes(), "")
 	if resp.StatusCode < 300 && watched(provider) {
 		a.drift.Observe(drift.Response, provider, path, raw.bytes(), true)
@@ -288,28 +256,6 @@ func wholeToClient(body []byte, via, to string, reply translate.Reply) ([]byte, 
 		return translate.OpenAIResponseToAnthropic(hub, reply)
 	}
 	return hub, nil
-}
-
-type captureWriter struct {
-	cap *contract.Capture
-}
-
-func (c captureWriter) Write(p []byte) (int, error) {
-	c.cap.WriteResp(p)
-	return len(p), nil
-}
-
-type errFlusher struct {
-	flushWriter
-	err error
-}
-
-func (e *errFlusher) Write(p []byte) (int, error) {
-	n, err := e.flushWriter.Write(p)
-	if err != nil && e.err == nil {
-		e.err = err
-	}
-	return n, err
 }
 
 func copyFlushing(dst flushWriter, src io.Reader) error {
