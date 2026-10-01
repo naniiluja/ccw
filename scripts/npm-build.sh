@@ -9,6 +9,8 @@ OUT=${1:-dist/npm}
 case "$OUT" in /*) ;; *) OUT="$PWD/$OUT" ;; esac
 VERSION=$(node -p "require('./npm/ccw-gateway/package.json').version")
 rm -rf "$OUT" && mkdir -p "$OUT"
+# The SPA is embedded into every binary, so it is built before the first binary is compiled.
+bash scripts/ui-build.sh
 for target in linux/amd64/linux/x64 linux/arm64/linux/arm64 darwin/amd64/darwin/x64 \
               darwin/arm64/darwin/arm64 windows/amd64/win32/x64 windows/arm64/win32/arm64; do
   IFS=/ read -r goos goarch os cpu <<<"$target"

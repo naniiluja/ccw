@@ -27,4 +27,4 @@
 - `README.md`, `SECURITY.md` và phần lớn `docs/` đã bị chủ repo xóa có chủ đích. Không khôi phục chúng.
 
 ## Monorepo
-- Git chỉ ở root. Module Go nằm trong `be/` (`be/go.mod`), dashboard viết lại sẽ nằm trong `fe/`; gốc giữ `CLAUDE.md`, `.claude/`, `.github/`, `scripts/`, `npm/`, `docs/`, `LICENSE`.
+- Git chỉ ở root. Module Go nằm trong `be/` (`be/go.mod`), dashboard React nằm trong `fe/` (bản build nhúng `be/internal/webui/static/` bị gitignore, không commit); gốc giữ `CLAUDE.md`, `.claude/`, `.github/`, `scripts/`, `npm/`, `docs/`, `LICENSE`.
