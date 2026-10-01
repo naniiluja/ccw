@@ -71,7 +71,7 @@ func TestAddConnectionNeedsSession(t *testing.T) {
 	req := loopbackRequest("POST", "/accounts", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/login" {
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/ui/login" {
 		t.Errorf("unauth create code=%d loc=%q, want 302 -> /login", rec.Code, rec.Header().Get("Location"))
 	}
 	if list, _ := s.ListConnections(); len(list) != 0 {

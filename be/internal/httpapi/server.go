@@ -270,6 +270,7 @@ func (a *api) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /filters", a.requireSession(a.saveFilter))
 	mux.HandleFunc("POST /filters/{id}/delete", a.requireSession(a.deleteFilter))
 	mux.HandleFunc("GET /usage", a.requireSession(a.usage))
+	mux.HandleFunc("GET /api/session", a.sessionState)
 	mux.HandleFunc("POST /login", a.loginSubmit)
 	mux.HandleFunc("POST /logout", a.logout)
 }
@@ -309,7 +310,11 @@ func (a *api) requireSession(next http.HandlerFunc) http.HandlerFunc {
 			next(w, withPrincipal(r, principal{admin: true}))
 			return
 		}
-		http.Redirect(w, r, "/login", http.StatusFound)
+		if wantsJSON(r) {
+			writeError(w, http.StatusUnauthorized, "sign in required")
+			return
+		}
+		http.Redirect(w, r, uiLoginPath, http.StatusFound)
 	}
 }
 

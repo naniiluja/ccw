@@ -44,8 +44,8 @@ func TestBrowserRoutesRequireSession(t *testing.T) {
 	for _, path := range []string{"/accounts", "/usage"} {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
-		if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/login" {
-			t.Errorf("%s without session: code=%d loc=%q, want 302 -> /login", path, rec.Code, rec.Header().Get("Location"))
+		if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/ui/login" {
+			t.Errorf("%s without session: code=%d loc=%q, want 302 -> /ui/login", path, rec.Code, rec.Header().Get("Location"))
 		}
 	}
 }
@@ -648,8 +648,8 @@ func TestAuthOnKeepsAPublicHost(t *testing.T) {
 	h := NewWithAuth(s, nil, cfg)
 
 	rec := serveGuard(h, guardReq("GET", "/accounts", "ccw.example", nil))
-	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/login" {
-		t.Errorf("GET /accounts with no session: code=%d loc=%q, want 302 -> /login", rec.Code, rec.Header().Get("Location"))
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/ui/login" {
+		t.Errorf("GET /accounts with no session: code=%d loc=%q, want 302 -> /ui/login", rec.Code, rec.Header().Get("Location"))
 	}
 
 	lr := guardReq("POST", "/login", "ccw.example", strings.NewReader(loginForm(testPassword)))
