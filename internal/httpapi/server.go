@@ -87,15 +87,22 @@ func NewWithAuth(s *store.Store, baseOverride map[string]string, authCfg *auth.C
 
 // newServer builds the api and its routes; tests reach the api through it.
 func newServer(s *store.Store, baseOverride map[string]string, authCfg *auth.Config) (*api, http.Handler) {
-	a := &api{store: s, baseOverride: baseOverride, auth: authCfg, rrNext: map[string]rrCursor{},
-		keyLim:  keyLimiter{seen: map[string][]time.Time{}},
-		cat:     catalog{m: map[string]catalogEntry{}, inflight: map[string]*catalogFetch{}},
-		copilot: copilotCache{m: map[string]copilotToken{}},
-		sigs:    sigStore{m: map[string]sigEntry{}}, drift: drift.New(s),
-		rate: rateHeaders{m: map[string]rateSnapshot{}}, quota: quotaCache{m: map[string]AccountQuota{}, highWater: map[string]uint64{}, flights: map[string]*quotaFlight{}},
-		auto: autoState{running: map[string]*autoRun{}}, login: auth.NewLoginGuard(),
-		claims: claimTables{unknown: map[string]claimUnknownEntry{}, hold: map[string]claimHoldEntry{}, done: map[string]claimDoneEntry{}},
-		zen:    newZenState(),
+	a := &api{
+		store:        s,
+		baseOverride: baseOverride,
+		auth:         authCfg,
+		rrNext:       map[string]rrCursor{},
+		keyLim:       newKeyLimiter(),
+		cat:          newCatalog(),
+		copilot:      newCopilotCache(),
+		sigs:         newSigStore(),
+		drift:        drift.New(s),
+		rate:         newRateHeaders(),
+		quota:        newQuotaCache(),
+		auto:         newAutoState(),
+		login:        auth.NewLoginGuard(),
+		claims:       newClaimTables(),
+		zen:          newZenState(),
 	}
 	go a.autoTestLoop()
 	a.loadDefs()
@@ -103,6 +110,20 @@ func newServer(s *store.Store, baseOverride map[string]string, authCfg *auth.Con
 	go a.reviewLoop()
 	go a.errorReviewLoop()
 	mux := http.NewServeMux()
+	a.registerRoutes(mux)
+	return a, a.guardRequest(collapseV1(mux))
+}
+
+// newCatalog lives here, not next to its type in v1.go, which this change
+// leaves alone.
+func newCatalog() catalog {
+	return catalog{m: map[string]catalogEntry{}, inflight: map[string]*catalogFetch{}}
+}
+
+// registerRoutes adds every route to mux. Each route names its auth tier:
+// requireSession for the dashboard, requireToken for reads by a machine, and
+// requireAdmin for every write through /api.
+func (a *api) registerRoutes(mux *http.ServeMux) {
 	// One base URL: the model in the body picks the provider and its accounts.
 	// The contract of /v1 is public, like the API it describes.
 	mux.HandleFunc("GET /openapi.json", serveOpenAPI)
@@ -210,7 +231,6 @@ func newServer(s *store.Store, baseOverride map[string]string, authCfg *auth.Con
 	mux.HandleFunc("GET /usage", a.requireSession(a.usage))
 	mux.HandleFunc("POST /login", a.loginSubmit)
 	mux.HandleFunc("POST /logout", a.logout)
-	return a, a.guardRequest(collapseV1(mux))
 }
 
 // collapseV1 routes /v1/v1/… (any number of repeats) as /v1/…. The base URL

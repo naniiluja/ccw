@@ -175,6 +175,10 @@ type keyLimiter struct {
 	seen map[string][]time.Time
 }
 
+func newKeyLimiter() keyLimiter {
+	return keyLimiter{seen: map[string][]time.Time{}}
+}
+
 // allow records a request by key at now when the key made fewer than rpm in
 // the minute before. Otherwise it records nothing and returns how long until
 // the oldest of those leaves the window.

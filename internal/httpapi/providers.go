@@ -38,6 +38,10 @@ type sigStore struct {
 	m  map[string]sigEntry
 }
 
+func newSigStore() sigStore {
+	return sigStore{m: map[string]sigEntry{}}
+}
+
 type sigEntry struct {
 	sig string
 	at  time.Time
@@ -210,6 +214,10 @@ type copilotToken struct {
 type copilotCache struct {
 	mu sync.Mutex
 	m  map[string]copilotToken
+}
+
+func newCopilotCache() copilotCache {
+	return copilotCache{m: map[string]copilotToken{}}
 }
 
 // exchanged returns the bearer to send for a provider whose stored credential

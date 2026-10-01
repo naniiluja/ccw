@@ -59,186 +59,175 @@ func mapClaudeClearName(name string) string {
 // claudeResetRows maps juniper_tide and cedar_ember blocks to QuotaReset rows.
 func claudeResetRows(usage map[string]any, now time.Time) []QuotaReset {
 	var rows []QuotaReset
-
-	// 1. juniper_tide (weekly reset)
 	if jt := jobj(usage["juniper_tide"]); jt != nil {
-		eligible := true
-		if e, ok := jt["eligible"].(bool); ok && !e {
-			eligible = false
-		}
-		ineligReason, _ := jt["ineligible_reason"].(string)
-
-		available, _ := jt["available"].(bool)
-		resetsPerWeek, _ := jnum(jt["resets_per_week"])
-		nextAt, _ := jt["next_available_at"].(string)
-
-		total := int(resetsPerWeek)
-		if total < 0 {
-			total = 0
-		}
-		left := 0
-		if available {
-			left = 1
-		}
-
-		w := QuotaReset{
-			ID:     "weekly",
-			Kind:   "weekly",
-			Title:  "5-hour limit reset",
-			Clears: []string{"5h"},
-			Left:   left,
-			Total:  total,
-			NextAt: nextAt,
-		}
-
-		switch {
-		case !eligible:
-			w.Usable = false
-			w.Blocked = "ineligible:" + ineligReason
-		case !available && nextAt != "":
-			w.Usable = false
-			w.Blocked = "used"
-		case !available:
-			w.Usable = false
-			w.Blocked = "not_at_limit"
-		default:
-			w.Usable = true
-			w.Blocked = ""
-		}
-		rows = append(rows, w)
+		rows = append(rows, weeklyResetRow(jt))
 	}
-
-	// 2. cedar_ember (grants)
 	if ce := jobj(usage["cedar_ember"]); ce != nil {
-		emberEligible := true
-		if e, ok := ce["eligible"].(bool); ok && !e {
-			emberEligible = false
-		}
-		emberReason, _ := ce["ineligible_reason"].(string)
+		rows = append(rows, grantResetRows(ce, now)...)
+	}
+	return rows
+}
 
-		isCooldown := false
-		if cu, ok := ce["cooldown_until"].(string); ok && cu != "" {
-			if t, err := time.Parse(time.RFC3339, cu); err == nil && now.Before(t) {
-				isCooldown = true
-			}
-		}
+// weeklyResetRow maps the juniper_tide block to the weekly reset row.
+func weeklyResetRow(jt map[string]any) QuotaReset {
+	eligible := true
+	if e, ok := jt["eligible"].(bool); ok && !e {
+		eligible = false
+	}
+	ineligReason, _ := jt["ineligible_reason"].(string)
+	available, _ := jt["available"].(bool)
+	resetsPerWeek, _ := jnum(jt["resets_per_week"])
+	nextAt, _ := jt["next_available_at"].(string)
 
-		rawGrants, _ := ce["grants"].([]any)
-		seenIDs := map[string]bool{}
+	left := 0
+	if available {
+		left = 1
+	}
+	w := QuotaReset{
+		ID:     "weekly",
+		Kind:   "weekly",
+		Title:  "5-hour limit reset",
+		Clears: []string{"5h"},
+		Left:   left,
+		Total:  max(int(resetsPerWeek), 0),
+		NextAt: nextAt,
+	}
+	switch {
+	case !eligible:
+		w.Blocked = "ineligible:" + ineligReason
+	case !available && nextAt != "":
+		w.Blocked = "used"
+	case !available:
+		w.Blocked = "not_at_limit"
+	default:
+		w.Usable = true
+	}
+	return w
+}
 
-		for i, item := range rawGrants {
-			gm := jobj(item)
-			if gm == nil {
-				continue
-			}
-			pos := i + 1
-			id, _ := gm["id"].(string)
-			label, _ := gm["label"].(string)
-			if label == "" {
-				label = "Grant"
-			}
-			label = cutString(label, 200)
+// grantGate is the cedar_ember state that blocks every grant alike.
+type grantGate struct {
+	eligible bool
+	reason   string
+	cooldown bool
+}
 
-			leftVal, _ := jnum(gm["resets_left"])
-			totalVal, _ := jnum(gm["resets_total"])
-			left := int(leftVal)
-			total := int(totalVal)
-			if left < 0 {
-				left = 0
-			}
-			if total < 0 {
-				total = 0
-			}
-
-			startsAt, _ := gm["starts_at"].(string)
-			endsAt, _ := gm["ends_at"].(string)
-			paused, _ := gm["paused"].(bool)
-			usableNow, _ := gm["usable_now"].(bool)
-
-			var clears []string
-			if rawClears, ok := gm["clears"].([]any); ok {
-				for _, c := range rawClears {
-					if cs, ok := c.(string); ok {
-						clears = append(clears, cutString(mapClaudeClearName(cs), 40))
-					}
-				}
-			}
-			if clears == nil {
-				clears = []string{}
-			}
-
-			rowID := "grant:" + id
-			badID := false
-			if id == "" || !claudeGrantIDPattern.MatchString(id) || seenIDs[id] {
-				badID = true
-				if id == "" || seenIDs[id] {
-					rowID = fmt.Sprintf("bad:%d", pos)
-				}
-			}
-			if id != "" {
-				seenIDs[id] = true
-			}
-
-			r := QuotaReset{
-				ID:        rowID,
-				Kind:      "grant",
-				Title:     label,
-				Clears:    clears,
-				Left:      left,
-				Total:     total,
-				ValidFrom: startsAt,
-				ExpiresAt: endsAt,
-			}
-
-			if badID {
-				r.Usable = false
-				r.Blocked = "bad_id"
-			} else {
-				// Claude blocked rule order
-				var notStarted, isExpired bool
-				if startsAt != "" {
-					if t, err := time.Parse(time.RFC3339, startsAt); err == nil && now.Before(t) {
-						notStarted = true
-					}
-				}
-				if endsAt != "" {
-					if t, err := time.Parse(time.RFC3339, endsAt); err == nil && !now.Before(t) {
-						isExpired = true
-					}
-				}
-
-				switch {
-				case !emberEligible:
-					r.Usable = false
-					r.Blocked = "ineligible:" + emberReason
-				case isCooldown:
-					r.Usable = false
-					r.Blocked = "cooldown"
-				case paused:
-					r.Usable = false
-					r.Blocked = "paused"
-				case notStarted:
-					r.Usable = false
-					r.Blocked = "not_started"
-				case isExpired:
-					r.Usable = false
-					r.Blocked = "expired"
-				case left == 0:
-					r.Usable = false
-					r.Blocked = "used"
-				case !usableNow:
-					r.Usable = false
-					r.Blocked = "not_at_limit"
-				default:
-					r.Usable = true
-					r.Blocked = ""
-				}
-			}
-			rows = append(rows, r)
+// grantResetRows maps the cedar_ember grants to reset rows. seenIDs spans the
+// whole list, so a repeated id is caught across grants.
+func grantResetRows(ce map[string]any, now time.Time) []QuotaReset {
+	gate := grantGate{eligible: true}
+	if e, ok := ce["eligible"].(bool); ok && !e {
+		gate.eligible = false
+	}
+	gate.reason, _ = ce["ineligible_reason"].(string)
+	if cu, ok := ce["cooldown_until"].(string); ok && cu != "" {
+		if t, err := time.Parse(time.RFC3339, cu); err == nil && now.Before(t) {
+			gate.cooldown = true
 		}
 	}
 
+	var rows []QuotaReset
+	rawGrants, _ := ce["grants"].([]any)
+	seenIDs := map[string]bool{}
+	for i, item := range rawGrants {
+		// The position counts every raw item, objects or not.
+		if gm := jobj(item); gm != nil {
+			rows = append(rows, grantRow(gm, i+1, seenIDs, gate, now))
+		}
+	}
 	return rows
+}
+
+// grantRow maps the grant at position pos and records its id in seenIDs. An
+// empty or repeated id gets the row id bad:<pos>.
+func grantRow(gm map[string]any, pos int, seenIDs map[string]bool, gate grantGate, now time.Time) QuotaReset {
+	id, _ := gm["id"].(string)
+	label, _ := gm["label"].(string)
+	if label == "" {
+		label = "Grant"
+	}
+	leftVal, _ := jnum(gm["resets_left"])
+	totalVal, _ := jnum(gm["resets_total"])
+	startsAt, _ := gm["starts_at"].(string)
+	endsAt, _ := gm["ends_at"].(string)
+
+	clears := []string{}
+	if rawClears, ok := gm["clears"].([]any); ok {
+		for _, c := range rawClears {
+			if cs, ok := c.(string); ok {
+				clears = append(clears, cutString(mapClaudeClearName(cs), 40))
+			}
+		}
+	}
+
+	rowID := "grant:" + id
+	badID := false
+	if id == "" || !claudeGrantIDPattern.MatchString(id) || seenIDs[id] {
+		badID = true
+		if id == "" || seenIDs[id] {
+			rowID = fmt.Sprintf("bad:%d", pos)
+		}
+	}
+	if id != "" {
+		seenIDs[id] = true
+	}
+
+	r := QuotaReset{
+		ID:        rowID,
+		Kind:      "grant",
+		Title:     cutString(label, 200),
+		Clears:    clears,
+		Left:      max(int(leftVal), 0),
+		Total:     max(int(totalVal), 0),
+		ValidFrom: startsAt,
+		ExpiresAt: endsAt,
+	}
+	if badID {
+		r.Blocked = "bad_id"
+	} else {
+		r.Blocked = grantBlockedReason(gm, gate, r.Left, now)
+	}
+	r.Usable = r.Blocked == ""
+	return r
+}
+
+// grantBlockedReason applies Claude's blocked rules to a grant in their order,
+// and returns "" for a usable grant.
+func grantBlockedReason(gm map[string]any, gate grantGate, left int, now time.Time) string {
+	startsAt, _ := gm["starts_at"].(string)
+	endsAt, _ := gm["ends_at"].(string)
+	paused, _ := gm["paused"].(bool)
+	usableNow, _ := gm["usable_now"].(bool)
+
+	var notStarted, isExpired bool
+	if startsAt != "" {
+		if t, err := time.Parse(time.RFC3339, startsAt); err == nil && now.Before(t) {
+			notStarted = true
+		}
+	}
+	if endsAt != "" {
+		if t, err := time.Parse(time.RFC3339, endsAt); err == nil && !now.Before(t) {
+			isExpired = true
+		}
+	}
+
+	switch {
+	case !gate.eligible:
+		return "ineligible:" + gate.reason
+	case gate.cooldown:
+		return "cooldown"
+	case paused:
+		return "paused"
+	case notStarted:
+		return "not_started"
+	case isExpired:
+		return "expired"
+	case left == 0:
+		return "used"
+	case !usableNow:
+		return "not_at_limit"
+	}
+	return ""
 }
 
 // codexResetRows maps the Codex rate-limit-reset-credits response to QuotaReset rows.
@@ -422,6 +411,10 @@ type claimTables struct {
 	done    map[string]claimDoneEntry    // key: connID + ":" + requestId
 }
 
+func newClaimTables() claimTables {
+	return claimTables{unknown: map[string]claimUnknownEntry{}, hold: map[string]claimHoldEntry{}, done: map[string]claimDoneEntry{}}
+}
+
 type claimUnknownEntry struct {
 	requestID string
 	at        time.Time
@@ -438,9 +431,12 @@ type claimDoneEntry struct {
 	at      time.Time
 }
 
+// resetClaimer spends one reset of a connection at its provider.
+type resetClaimer func(ctx context.Context, a *api, c store.Connection, token string, r QuotaReset, requestID string) (claimResult, error)
+
 var (
 	claimRequestIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
-	resetClaimers         = map[string]func(ctx context.Context, a *api, c store.Connection, token string, r QuotaReset, requestID string) (claimResult, error){}
+	resetClaimers         = map[string]resetClaimer{}
 )
 
 func init() {
@@ -581,276 +577,293 @@ func claimCodex(ctx context.Context, a *api, c store.Connection, token string, r
 	}
 }
 
+// claimRefusal is a claim answered before it reaches the provider: a plain
+// error with a status, or a 409 with a body.
+type claimRefusal struct {
+	status   int
+	msg      string
+	conflict map[string]string
+}
+
+func refuseClaim(status int, msg string) *claimRefusal {
+	return &claimRefusal{status: status, msg: msg}
+}
+
+func conflictClaim(body map[string]string) *claimRefusal {
+	return &claimRefusal{status: http.StatusConflict, conflict: body}
+}
+
+func (e *claimRefusal) write(w http.ResponseWriter) {
+	if e.conflict != nil {
+		writeConflictError(w, e.conflict)
+		return
+	}
+	writeError(w, e.status, e.msg)
+}
+
+// claimRequest is a claim that passed claimPreflight. resetKey and reqKey key
+// the claim tables by the path's connection id.
+type claimRequest struct {
+	connID    string
+	conn      store.Connection
+	claimer   resetClaimer
+	resetID   string
+	requestID string
+	resetKey  string
+	reqKey    string
+}
+
 // claimReset handles POST /quota/{connectionId}/reset.
 func (a *api) claimReset(w http.ResponseWriter, r *http.Request) {
-	// 1. Auth: No-auth mode or no valid session cookie answers 403.
-	if a.auth == nil {
-		writeError(w, http.StatusForbidden, "claims need sign-in")
-		return
-	}
-	ck, err := r.Cookie(sessionCookie)
-	if err != nil || !a.auth.ValidSession(ck.Value) {
-		writeError(w, http.StatusForbidden, "claims need sign-in")
+	cr, refusal := a.claimPreflight(w, r)
+	if refusal != nil {
+		refusal.write(w)
 		return
 	}
 
-	// Sec-Fetch-Site check: if present and not same-origin, 403.
-	if sfs := r.Header.Get("Sec-Fetch-Site"); sfs != "" && sfs != "same-origin" {
-		writeError(w, http.StatusForbidden, "cross-site request refused")
-		return
-	}
-
-	// Content-Type check.
-	if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
-		writeError(w, http.StatusBadRequest, "Content-Type must be application/json")
-		return
-	}
-
-	// Path parameter connection id.
-	connID := r.PathValue("id")
-	if connID == "" {
-		connID = r.PathValue("connectionId")
-	}
-	if connID == "" {
-		writeError(w, http.StatusNotFound, "unknown connection")
-		return
-	}
-
-	conn, err := a.connection(connID)
-	if err != nil || !conn.IsActive {
-		writeError(w, http.StatusNotFound, "unknown connection")
-		return
-	}
-
-	claimer, hasClaimer := resetClaimers[conn.Provider]
-	if !hasClaimer {
-		writeError(w, http.StatusNotFound, "provider has no claimer")
-		return
-	}
-
-	// Body max 4 KiB.
-	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
-	var body struct {
-		ResetID   string `json:"resetId"`
-		RequestID string `json:"requestId"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "bad json body: "+err.Error())
-		return
-	}
-	if len(body.ResetID) == 0 || len(body.ResetID) > 200 {
-		writeError(w, http.StatusBadRequest, "resetId must be 1-200 characters")
-		return
-	}
-	if !claimRequestIDPattern.MatchString(body.RequestID) {
-		writeError(w, http.StatusBadRequest, "invalid requestId format")
-		return
-	}
-
-	// 2. Lock: tryLock per connection.
-	l, ok := a.claimLocks.tryLock(connID)
+	// One claim per connection at a time.
+	l, ok := a.claimLocks.tryLock(cr.connID)
 	if !ok {
 		writeConflictError(w, map[string]string{"error": "claim_in_progress"})
 		return
 	}
 	defer l.Unlock()
 
-	resetKey := connID + ":" + body.ResetID
-	reqKey := connID + ":" + body.RequestID
-	now := time.Now()
+	ue, hasUnknown, refusal := a.checkClaimTables(cr, time.Now())
+	if refusal != nil {
+		refusal.write(w)
+		return
+	}
+	target, refusal := a.claimTarget(r.Context(), cr)
+	if refusal != nil {
+		refusal.write(w)
+		return
+	}
+	// A retry of an unknown claim, 60 seconds on, whose reset has gone down.
+	if hasUnknown && ue.requestID == cr.requestID && likelySpent(target, ue) {
+		a.recordLikelySpent(cr)
+		writeJSON(w, map[string]any{"outcome": "likely_spent", "requestId": cr.requestID})
+		return
+	}
+	if refusal := a.checkClaimHold(cr, target); refusal != nil {
+		refusal.write(w)
+		return
+	}
+	if refusal := unusableTarget(target); refusal != nil {
+		refusal.write(w)
+		return
+	}
 
-	// 3. Unknown and done check.
+	log.Printf("claim sent: connection=%s resetId=%s requestId=%s", cr.connID, cr.resetID, cr.requestID)
+	tctx, tcancel := context.WithTimeout(context.WithoutCancel(r.Context()), 20*time.Second)
+	defer tcancel()
+	token, terr := a.secretFor(tctx, cr.connID)
+	if terr != nil {
+		writeError(w, http.StatusServiceUnavailable, "cannot read connection token")
+		return
+	}
+	claimRes, _ := cr.claimer(r.Context(), a, cr.conn, token, *target, cr.requestID)
+	if claimRes.Outcome == "failed" && claimRes.ProviderCode == "401" {
+		go a.refreshAfterClaim(cr.connID)
+	}
+	log.Printf("claim outcome: connection=%s resetId=%s requestId=%s outcome=%s providerCode=%s",
+		cr.connID, cr.resetID, cr.requestID, claimRes.Outcome, claimRes.ProviderCode)
+
+	a.recordClaimOutcome(cr, *target, claimRes)
+	writeJSON(w, a.claimAnswer(r.Context(), cr, claimRes))
+}
+
+// claimPreflight checks the session, the fetch site, the content type, the
+// connection and its claimer, and decodes the body of at most 4 KiB.
+func (a *api) claimPreflight(w http.ResponseWriter, r *http.Request) (claimRequest, *claimRefusal) {
+	// No-auth mode or no valid session cookie answers 403.
+	if a.auth == nil {
+		return claimRequest{}, refuseClaim(http.StatusForbidden, "claims need sign-in")
+	}
+	if ck, err := r.Cookie(sessionCookie); err != nil || !a.auth.ValidSession(ck.Value) {
+		return claimRequest{}, refuseClaim(http.StatusForbidden, "claims need sign-in")
+	}
+	if sfs := r.Header.Get("Sec-Fetch-Site"); sfs != "" && sfs != "same-origin" {
+		return claimRequest{}, refuseClaim(http.StatusForbidden, "cross-site request refused")
+	}
+	if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		return claimRequest{}, refuseClaim(http.StatusBadRequest, "Content-Type must be application/json")
+	}
+
+	connID := r.PathValue("id")
+	if connID == "" {
+		connID = r.PathValue("connectionId")
+	}
+	if connID == "" {
+		return claimRequest{}, refuseClaim(http.StatusNotFound, "unknown connection")
+	}
+	conn, err := a.connection(connID)
+	if err != nil || !conn.IsActive {
+		return claimRequest{}, refuseClaim(http.StatusNotFound, "unknown connection")
+	}
+	claimer, hasClaimer := resetClaimers[conn.Provider]
+	if !hasClaimer {
+		return claimRequest{}, refuseClaim(http.StatusNotFound, "provider has no claimer")
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
+	var body struct {
+		ResetID   string `json:"resetId"`
+		RequestID string `json:"requestId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		return claimRequest{}, refuseClaim(http.StatusBadRequest, "bad json body: "+err.Error())
+	}
+	if len(body.ResetID) == 0 || len(body.ResetID) > 200 {
+		return claimRequest{}, refuseClaim(http.StatusBadRequest, "resetId must be 1-200 characters")
+	}
+	if !claimRequestIDPattern.MatchString(body.RequestID) {
+		return claimRequest{}, refuseClaim(http.StatusBadRequest, "invalid requestId format")
+	}
+	return claimRequest{
+		connID: connID, conn: conn, claimer: claimer,
+		resetID: body.ResetID, requestID: body.RequestID,
+		resetKey: connID + ":" + body.ResetID, reqKey: connID + ":" + body.RequestID,
+	}, nil
+}
+
+// checkClaimTables drops done entries older than 15 minutes, refuses a
+// request id already done, and refuses while another unknown claim of the
+// reset is pending or is younger than 60 seconds. It returns the unknown entry
+// of the reset, if any, for the likely-spent check after the fresh read.
+func (a *api) checkClaimTables(cr claimRequest, now time.Time) (claimUnknownEntry, bool, *claimRefusal) {
 	a.claims.mu.Lock()
-	// Cleanup expired done entries (> 15 minutes)
+	defer a.claims.mu.Unlock()
 	for k, de := range a.claims.done {
 		if now.Sub(de.at) > 15*time.Minute {
 			delete(a.claims.done, k)
 		}
 	}
-	// Check done table
-	if de, ok := a.claims.done[reqKey]; ok {
-		a.claims.mu.Unlock()
-		writeConflictError(w, map[string]string{
-			"error":   "already_done",
-			"outcome": de.outcome,
-		})
-		return
+	if de, ok := a.claims.done[cr.reqKey]; ok {
+		return claimUnknownEntry{}, false, conflictClaim(map[string]string{"error": "already_done", "outcome": de.outcome})
 	}
-
-	// Check unknown table
-	ue, hasUnknown := a.claims.unknown[resetKey]
-	if hasUnknown {
-		if ue.requestID != body.RequestID {
-			a.claims.mu.Unlock()
-			writeConflictError(w, map[string]string{
-				"error":     "unknown_pending",
-				"requestId": ue.requestID,
-			})
-			return
-		}
-		if now.Sub(ue.at) < 60*time.Second {
-			a.claims.mu.Unlock()
-			writeConflictError(w, map[string]string{
-				"error":     "unknown_pending",
-				"requestId": ue.requestID,
-			})
-			return
-		}
+	ue, hasUnknown := a.claims.unknown[cr.resetKey]
+	if hasUnknown && (ue.requestID != cr.requestID || now.Sub(ue.at) < 60*time.Second) {
+		return ue, true, conflictClaim(map[string]string{"error": "unknown_pending", "requestId": ue.requestID})
 	}
-	a.claims.mu.Unlock()
+	return ue, hasUnknown, nil
+}
 
-	// 4. Fresh read
-	fresh, ferr := a.freshQuota(r.Context(), conn)
+// claimTarget reads the resets fresh from the provider and returns the row of
+// the claimed reset, or nil when the read no longer lists it.
+func (a *api) claimTarget(ctx context.Context, cr claimRequest) (*QuotaReset, *claimRefusal) {
+	unreadable := refuseClaim(http.StatusServiceUnavailable, "cannot read resets now")
+	fresh, ferr := a.freshQuota(ctx, cr.conn)
 	if ferr != nil || fresh.ResetsError != "" {
-		writeError(w, http.StatusServiceUnavailable, "cannot read resets now")
-		return
+		return nil, unreadable
 	}
-	if conn.Provider == "claude" {
-		if body.ResetID == "weekly" && !fresh.HasJuniperTide {
-			writeError(w, http.StatusServiceUnavailable, "cannot read resets now")
-			return
+	if cr.conn.Provider == "claude" {
+		if cr.resetID == "weekly" && !fresh.HasJuniperTide {
+			return nil, unreadable
 		}
-		if strings.HasPrefix(body.ResetID, "grant:") && !fresh.HasCedarEmber {
-			writeError(w, http.StatusServiceUnavailable, "cannot read resets now")
-			return
+		if strings.HasPrefix(cr.resetID, "grant:") && !fresh.HasCedarEmber {
+			return nil, unreadable
 		}
 	}
-
-	// Find the targeted row in fresh.Resets
-	var targetRow *QuotaReset
 	for i := range fresh.Resets {
-		if fresh.Resets[i].ID == body.ResetID {
-			targetRow = &fresh.Resets[i]
-			break
+		if fresh.Resets[i].ID == cr.resetID {
+			return &fresh.Resets[i], nil
 		}
 	}
+	return nil, nil
+}
 
-	// Check if this was an unknown retry after >= 60s
-	if hasUnknown && ue.requestID == body.RequestID {
-		isLikelySpent := false
-		if targetRow == nil {
-			isLikelySpent = true
-		} else if targetRow.Kind == "weekly" {
-			if targetRow.Left < ue.left && targetRow.NextAt != "" {
-				isLikelySpent = true
-			}
-		} else {
-			if targetRow.Left < ue.left {
-				isLikelySpent = true
-			}
-		}
-
-		if isLikelySpent {
-			a.claims.mu.Lock()
-			delete(a.claims.unknown, resetKey)
-			a.claims.done[reqKey] = claimDoneEntry{outcome: "likely_spent", at: time.Now()}
-			a.claims.mu.Unlock()
-
-			writeJSON(w, map[string]any{
-				"outcome":   "likely_spent",
-				"requestId": body.RequestID,
-			})
-			return
-		}
+// likelySpent reports whether the fresh row shows that an unknown claim went
+// through: the row is gone, or it has fewer resets left (for the weekly reset,
+// also with a next reset time).
+func likelySpent(target *QuotaReset, ue claimUnknownEntry) bool {
+	if target == nil {
+		return true
 	}
+	if target.Kind == "weekly" {
+		return target.Left < ue.left && target.NextAt != ""
+	}
+	return target.Left < ue.left
+}
 
-	// Check hold table against fresh read's Left
+func (a *api) recordLikelySpent(cr claimRequest) {
 	a.claims.mu.Lock()
-	if he, ok := a.claims.hold[resetKey]; ok {
-		if targetRow != nil && targetRow.Left < he.left {
-			delete(a.claims.hold, resetKey)
-		} else if time.Since(he.at) < 60*time.Second {
-			a.claims.mu.Unlock()
-			writeConflictError(w, map[string]string{
-				"error":   "just_reset",
-				"blocked": "just_reset",
-			})
-			return
-		} else {
-			delete(a.claims.hold, resetKey)
-		}
-	}
+	delete(a.claims.unknown, cr.resetKey)
+	a.claims.done[cr.reqKey] = claimDoneEntry{outcome: "likely_spent", at: time.Now()}
 	a.claims.mu.Unlock()
+}
 
-	if targetRow == nil {
-		writeConflictError(w, map[string]string{
-			"error":   "not_found",
-			"blocked": "not_found",
-		})
-		return
-	}
-
-	if !targetRow.Usable {
-		writeConflictError(w, map[string]string{
-			"error":   targetRow.Blocked,
-			"blocked": targetRow.Blocked,
-		})
-		return
-	}
-
-	// 5. Log
-	log.Printf("claim sent: connection=%s resetId=%s requestId=%s", connID, body.ResetID, body.RequestID)
-
-	// 6. Claim
-	tctx, tcancel := context.WithTimeout(context.WithoutCancel(r.Context()), 20*time.Second)
-	defer tcancel()
-	token, terr := a.secretFor(tctx, connID)
-	if terr != nil {
-		writeError(w, http.StatusServiceUnavailable, "cannot read connection token")
-		return
-	}
-
-	claimRes, _ := claimer(r.Context(), a, conn, token, *targetRow, body.RequestID)
-	if claimRes.Outcome == "failed" && claimRes.ProviderCode == "401" {
-		go func() {
-			rctx, rcancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer rcancel()
-			a.forceRefresh(rctx, connID)
-		}()
-	}
-
-	// 7. Normalize & Log
-	log.Printf("claim outcome: connection=%s resetId=%s requestId=%s outcome=%s providerCode=%s",
-		connID, body.ResetID, body.RequestID, claimRes.Outcome, claimRes.ProviderCode)
-
-	// 8. Record
-	a.invalidateQuota(connID)
-
+// checkClaimHold refuses a claim right after a reset while the provider still
+// reports the resets left before it. The hold ends when Left drops or after
+// 60 seconds.
+func (a *api) checkClaimHold(cr claimRequest, target *QuotaReset) *claimRefusal {
 	a.claims.mu.Lock()
-	switch claimRes.Outcome {
+	defer a.claims.mu.Unlock()
+	he, ok := a.claims.hold[cr.resetKey]
+	if !ok {
+		return nil
+	}
+	if (target == nil || target.Left >= he.left) && time.Since(he.at) < 60*time.Second {
+		return conflictClaim(map[string]string{"error": "just_reset", "blocked": "just_reset"})
+	}
+	delete(a.claims.hold, cr.resetKey)
+	return nil
+}
+
+// unusableTarget refuses a reset the fresh read does not list or blocks.
+func unusableTarget(target *QuotaReset) *claimRefusal {
+	if target == nil {
+		return conflictClaim(map[string]string{"error": "not_found", "blocked": "not_found"})
+	}
+	if !target.Usable {
+		return conflictClaim(map[string]string{"error": target.Blocked, "blocked": target.Blocked})
+	}
+	return nil
+}
+
+// refreshAfterClaim refreshes a token the provider refused with 401. It runs
+// after the answer, so it has its own context.
+func (a *api) refreshAfterClaim(connID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	a.forceRefresh(ctx, connID)
+}
+
+// recordClaimOutcome drops the cached quota and records the outcome in the
+// claim tables. A failed claim never enters the done table and keeps any
+// unknown entry.
+func (a *api) recordClaimOutcome(cr claimRequest, target QuotaReset, res claimResult) {
+	a.invalidateQuota(cr.connID)
+	a.claims.mu.Lock()
+	defer a.claims.mu.Unlock()
+	switch res.Outcome {
 	case "reset":
-		delete(a.claims.unknown, resetKey)
-		a.claims.done[reqKey] = claimDoneEntry{outcome: "reset", at: time.Now()}
-		a.claims.hold[resetKey] = claimHoldEntry{left: targetRow.Left, at: time.Now()}
+		delete(a.claims.unknown, cr.resetKey)
+		a.claims.done[cr.reqKey] = claimDoneEntry{outcome: "reset", at: time.Now()}
+		a.claims.hold[cr.resetKey] = claimHoldEntry{left: target.Left, at: time.Now()}
 	case "spent", "not_needed", "not_allowed":
-		delete(a.claims.unknown, resetKey)
-		a.claims.done[reqKey] = claimDoneEntry{outcome: claimRes.Outcome, at: time.Now()}
+		delete(a.claims.unknown, cr.resetKey)
+		a.claims.done[cr.reqKey] = claimDoneEntry{outcome: res.Outcome, at: time.Now()}
 	case "unknown":
-		a.claims.unknown[resetKey] = claimUnknownEntry{
-			requestID: body.RequestID,
-			at:        time.Now(),
-			left:      targetRow.Left,
-		}
-	case "failed":
-		// failed never enters done table; keeps existing unknown entry if any
+		a.claims.unknown[cr.resetKey] = claimUnknownEntry{requestID: cr.requestID, at: time.Now(), left: target.Left}
 	}
-	a.claims.mu.Unlock()
+}
 
-	// 9. Refresh on reset
-	resBody := map[string]any{
-		"outcome":      claimRes.Outcome,
-		"providerCode": claimRes.ProviderCode,
-		"message":      claimRes.Message,
-		"requestId":    body.RequestID,
+// claimAnswer is the body of a claim that reached the provider. After a reset
+// it carries the quota read again.
+func (a *api) claimAnswer(ctx context.Context, cr claimRequest, res claimResult) map[string]any {
+	body := map[string]any{
+		"outcome":      res.Outcome,
+		"providerCode": res.ProviderCode,
+		"message":      res.Message,
+		"requestId":    cr.requestID,
 	}
-
-	if claimRes.Outcome == "reset" {
-		if postFresh, err := a.freshQuota(r.Context(), conn); err == nil {
-			resBody["quota"] = postFresh
+	if res.Outcome == "reset" {
+		if postFresh, err := a.freshQuota(ctx, cr.conn); err == nil {
+			body["quota"] = postFresh
 		}
 	}
-
-	writeJSON(w, resBody)
+	return body
 }
 
 func writeConflictError(w http.ResponseWriter, body any) {
