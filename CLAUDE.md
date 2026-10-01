@@ -38,7 +38,7 @@ Các đường dẫn trong `.claude/rules/*` tính từ `be/` trừ khi có ti�
 @.claude/rules/git-workflow.md
 
 ## Current plan
-Iteration tinh gọn ccw (19 task) đã `done`, lưu ở `.claude/plan/ARCHIVE.md` (task file ở `.claude/plan/archive/`; không xóa). Iteration dashboard (be và fe, task 033 đến 046) đang `in-review`: xem `.claude/plan/PLAN.md`; kế hoạch mới đi qua `/ccf:plan`, chạy bằng `/ccf:cook`.
+Iteration tinh gọn ccw (19 task) đã `done`, lưu ở `.claude/plan/ARCHIVE.md` (task file ở `.claude/plan/archive/`; không xóa). Iteration dashboard (be và fe, task 032 đến 046) đang `in-review`: xem `.claude/plan/PLAN.md`; kế hoạch mới đi qua `/ccf:plan`, chạy bằng `/ccf:cook`.
 Việc còn mở (đều là `WARN:`, chưa thành task):
 - `internal/httpapi/proxy.go` bỏ qua lỗi của `copyFlushing` mà không log; comment cũ ở `internal/auth/config.go`.
 - `-reset-password` chưa thu hồi session đang sống.

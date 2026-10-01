@@ -37,4 +37,4 @@ Nguồn: `/Users/naniiluja/.claude/plans/chia-theo-fe-v-fizzy-oasis.md`. Mục t
 | 043 | Trang Bộ lọc (blacklist field) | FE | cổng FE xanh, test MSW | 036 | in-review |
 | 044 | Trang Tổng quan (gộp từ các hook đã có) | FE | cổng FE xanh, test MSW | 036, 040, 041, 042 | in-review |
 | 045 | Trang Cài đặt chỉ đọc và thông tin kết nối | FE | cổng FE xanh, test MSW | 036 | in-review |
-| 046 | Đóng gói SPA vào binary và npm, đồng bộ spec, kiểm đầu cuối bằng trình duyệt | build + CI + spec + e2e | `bash scripts/ui-build.sh && bash scripts/check.sh` xanh, kiểm bằng Claude in Chrome | 033, 034, 035, 036, 037, 038, 039, 040, 041, 042, 043, 044, 045 | todo |
+| 046 | Đóng gói SPA vào binary và npm, đồng bộ spec, kiểm đầu cuối bằng trình duyệt | build + CI + spec + e2e | `bash scripts/ui-build.sh && bash scripts/check.sh` xanh, kiểm bằng Claude in Chrome | 033, 034, 035, 036, 037, 038, 039, 040, 041, 042, 043, 044, 045 | in-review |
