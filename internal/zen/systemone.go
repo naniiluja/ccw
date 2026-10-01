@@ -2,7 +2,7 @@ package zen
 
 import (
 	"encoding/json"
-	"log"
+	"log/slog"
 )
 
 // System One is TypeSafe's typed-answer endpoint, which jev answers on. Its
@@ -66,7 +66,8 @@ func systemOneAnswer(a any) any {
 	fields, known := systemOneAnswers[typ]
 	if !known {
 		// A primitive not named here yet: only its type leaves.
-		log.Printf("zen: system one answer of unknown type %q reduced to its type", typ)
+		// The answer is reduced to its type.
+		slog.Warn("zen.systemone.unknown_type", "type", typ)
 		return map[string]any{"type": m["type"]}
 	}
 	kept := map[string]any{}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"time"
@@ -23,37 +24,52 @@ func main() {
 	insecure := flag.Bool("insecure-no-auth", false, "start with no sign-in gate; every caller reaches every stored credential")
 	flag.Parse()
 
+	// Structured lines on stderr. The log package's output goes through the
+	// same handler from here on, log.Fatal included.
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, nil)))
+
 	s, err := store.Open(*dbPath)
 	if err != nil {
 		log.Fatalf("open store: %v", err)
 	}
 	defer s.Close()
 
+	// The password notice goes to stderr as plain text: through log.Writer()
+	// it would now be folded into one JSON line.
 	if *reset {
-		if err := resetPassword(s, log.Writer()); err != nil {
+		if err := resetPassword(s, os.Stderr); err != nil {
 			log.Fatal(err)
 		}
 		if os.Getenv("CCW_PASSWORD") != "" {
-			log.Print("CCW_PASSWORD is set and takes precedence over the stored password")
+			slog.Warn("auth.password.env_precedence", "detail", "CCW_PASSWORD is set and takes precedence over the stored password")
 		}
 		return
 	}
 
 	noAuth := *insecure || os.Getenv("CCW_INSECURE_NO_AUTH") == "1"
-	authCfg, err := setupAuth(s, os.Getenv("CCW_PASSWORD"), noAuth, log.Writer())
+	authCfg, err := setupAuth(s, os.Getenv("CCW_PASSWORD"), noAuth, os.Stderr)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	srv := &http.Server{
-		Addr:    *addr,
-		Handler: httpapi.NewWithAuth(s, nil, authCfg),
-		// Header-read only. A read or write deadline would cut a long stream.
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-	log.Printf("ccw listening on http://%s", *addr)
+	srv := newHTTPServer(*addr, httpapi.NewWithAuth(s, nil, authCfg))
+	slog.Info("server.listen", "url", "http://"+*addr)
 	if err := srv.ListenAndServe(); err != nil {
 		log.Fatal(err)
+	}
+}
+
+// idleTimeout closes a keep-alive connection that has sat idle this long.
+const idleTimeout = 120 * time.Second
+
+// newHTTPServer bounds the header read and an idle connection only. A read or
+// write deadline would cut a long stream, so WriteTimeout stays unset.
+func newHTTPServer(addr string, h http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           h,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       idleTimeout,
 	}
 }
 

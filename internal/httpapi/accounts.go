@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -159,7 +158,7 @@ func (a *api) modelsForAccount(w http.ResponseWriter, r *http.Request) {
 func (a *api) loadDefs() {
 	defs, err := a.store.ProviderDefs()
 	if err != nil {
-		log.Printf("provider defs: %v", err)
+		a.logger().Error("provider.defs.load.fail", "err", err)
 		return
 	}
 	provider.SetDeclared(defs)
@@ -181,15 +180,15 @@ func (a *api) migrateCustomEndpoints() {
 		}
 		d := provider.Def{ID: c.Provider, Kind: provider.KindAPIKey, API: c.Meta["api"], BaseURL: c.BaseURL}
 		if err := d.Normalize(); err != nil {
-			log.Printf("provider defs: cannot migrate %s: %v", c.Provider, err)
+			a.logger().Warn("provider.defs.migrate.fail", "provider", c.Provider, "err", err)
 			continue
 		}
 		if err := a.store.PutProviderDef(d); err != nil {
-			log.Printf("provider defs: %v", err)
+			a.logger().Error("provider.defs.save.fail", "provider", c.Provider, "err", err)
 			continue
 		}
 		a.loadDefs()
-		log.Printf("provider defs: %s is now a declared provider", c.Provider)
+		a.logger().Info("provider.defs.migrate", "provider", c.Provider)
 	}
 }
 

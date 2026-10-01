@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"bytes"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -237,6 +239,92 @@ func TestV1ModelsCarryTokenLimits(t *testing.T) {
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("/v1/models lacks %s\n%s", want, body)
+		}
+	}
+}
+
+// syncBuffer is a log sink that background loops and the request may share.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// loggedV1Call sends one /v1 call with the given headers to a server that logs
+// into a buffer, and returns the response and the log.
+func loggedV1Call(t *testing.T, secret string, header map[string]string) (*httptest.ResponseRecorder, string) {
+	t.Helper()
+	f := &fakeProvider{models: `{"data":[]}`}
+	url := f.start(t)
+	s, _ := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	t.Cleanup(func() { s.Close() })
+	s.CreateConnection("groq", "a", secret)
+	var out syncBuffer
+	logger := slog.New(slog.NewTextHandler(&out, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	_, h := newServerWithLog(s, map[string]string{"groq": url}, nil, logger)
+	req := loopbackRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"groq/llama","stream":false}`))
+	for k, v := range header {
+		req.Header.Set(k, v)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	return rec, out.String()
+}
+
+// Every line a /v1 call logs carries the id its caller reads in Request-Id, so
+// one grep follows the call through the log.
+func TestV1LogLinesCarryTheRequestID(t *testing.T) {
+	rec, logs := loggedV1Call(t, "gsk-placeholder-account", nil)
+	id := rec.Header().Get("Request-Id")
+	if !strings.HasPrefix(id, "req_") {
+		t.Fatalf("Request-Id = %q, want req_<hex>", id)
+	}
+	if !strings.Contains(logs, "req_id="+id) {
+		t.Fatalf("no log line carries req_id=%s:\n%s", id, logs)
+	}
+	for _, event := range []string{"proxy.upstream.start", "proxy.upstream.done"} {
+		found := false
+		for _, line := range strings.Split(logs, "\n") {
+			if strings.Contains(line, "msg="+event) {
+				found = true
+				if !strings.Contains(line, "req_id="+id) {
+					t.Errorf("%s line lacks req_id=%s: %s", event, id, line)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("no %s line in:\n%s", event, logs)
+		}
+	}
+}
+
+// The caller's credentials and the account's secret never reach the log.
+func TestLogsNeverHoldCallerCredentials(t *testing.T) {
+	const account = "gsk-placeholder-account-secret"
+	_, logs := loggedV1Call(t, account, map[string]string{
+		"Authorization": "Bearer sekret-value",
+		"X-Api-Key":     "sekret-xkey",
+	})
+	if logs == "" {
+		t.Fatal("the call logged nothing, so the check below proves nothing")
+	}
+	for _, secret := range []string{"sekret-value", "sekret-xkey", account} {
+		if strings.Contains(logs, secret) {
+			t.Errorf("the log holds %q:\n%s", secret, logs)
 		}
 	}
 }

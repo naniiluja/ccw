@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -642,7 +641,7 @@ func (a *api) errorReviewOnce() {
 	switch {
 	case errors.Is(err, errReviewRunning):
 	case err != nil:
-		log.Printf("error review: %v", err)
+		a.logger().Error("errors.review.fail", "err", err)
 		a.errReview.mu.Lock()
 		a.errReview.pauseTill, a.errReview.lastError = time.Now().Add(reviewBackoff), err.Error()
 		a.errReview.mu.Unlock()
@@ -650,7 +649,7 @@ func (a *api) errorReviewOnce() {
 		a.errReview.mu.Lock()
 		a.errReview.lastError = ""
 		a.errReview.mu.Unlock()
-		log.Printf("error review: judged %d group(s)", n)
+		a.logger().Info("errors.review.done", "groups", n)
 	}
 }
 

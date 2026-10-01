@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -219,5 +220,20 @@ func TestInsecureOptInStartsWithNoGate(t *testing.T) {
 	}
 	if hash, _ := s.GetSetting(passwordSetting); hash != "" {
 		t.Error("an ungated start generated a password")
+	}
+}
+
+// An idle keep-alive connection is closed, but no write deadline cuts a long
+// stream.
+func TestServerHasIdleTimeout(t *testing.T) {
+	srv := newHTTPServer("127.0.0.1:0", http.NotFoundHandler())
+	if srv.IdleTimeout <= 0 {
+		t.Errorf("IdleTimeout = %v, want > 0", srv.IdleTimeout)
+	}
+	if srv.WriteTimeout != 0 {
+		t.Errorf("WriteTimeout = %v, want 0 so a stream is not cut", srv.WriteTimeout)
+	}
+	if srv.ReadHeaderTimeout <= 0 {
+		t.Errorf("ReadHeaderTimeout = %v, want > 0", srv.ReadHeaderTimeout)
 	}
 }

@@ -3,7 +3,6 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
-	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -40,7 +39,7 @@ func (a *api) reloadFilters() {
 	list, err := a.store.ListFilters()
 	by := map[string][]filter.Rule{}
 	if err != nil {
-		log.Printf("load filters: %v", err)
+		a.logger().Error("filters.load.fail", "err", err)
 	}
 	for _, f := range list {
 		if !f.Enabled {
@@ -48,12 +47,12 @@ func (a *api) reloadFilters() {
 		}
 		// A body-wiping rule stored before the guard existed must not apply now.
 		if why := unsafeFilter(f.Kind, f.Pattern); why != "" {
-			log.Printf("skip unsafe filter %s (%s %q): %s", f.ID, f.Kind, f.Pattern, why)
+			a.logger().Warn("filters.skip.unsafe", "filter", f.ID, "kind", f.Kind, "pattern", f.Pattern, "reason", why)
 			continue
 		}
 		r, err := filter.Compile(f.Kind, f.Pattern)
 		if err != nil {
-			log.Printf("skip filter %s: %v", f.ID, err)
+			a.logger().Warn("filters.skip.invalid", "filter", f.ID, "err", err)
 			continue
 		}
 		by[f.Provider] = append(by[f.Provider], r)

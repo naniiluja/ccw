@@ -10,7 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"slices"
@@ -126,8 +126,9 @@ func (a *api) relayObserved(w http.ResponseWriter, resp *http.Response, connID, 
 		copyHeader(w.Header(), k, vs)
 	}
 	w.WriteHeader(resp.StatusCode)
-	tapped := streamBody(w, resp)
-	a.recordUsage(connID, keyIDOf(resp), tapped, resp.Header.Get("Content-Encoding"))
+	lg := a.respLog(resp)
+	tapped := streamBody(lg, w, resp)
+	a.recordUsage(lg, connID, keyIDOf(resp), tapped, resp.Header.Get("Content-Encoding"))
 	if resp.StatusCode < 300 && resp.Header.Get("Content-Encoding") == "" && watched(provider) {
 		a.drift.Observe(drift.Response, provider, path, tapped, isEventStream(resp, tapped))
 	}
@@ -149,7 +150,7 @@ func isEventStream(resp *http.Response, body []byte) bool {
 // A client that sends Accept-Encoding: gzip gets a gzip body that Go does not
 // auto-decompress, so the tap holds compressed bytes. The counter decompresses
 // its own copy; the caller still gets the original bytes untouched.
-func (a *api) recordUsage(connID, keyID string, body []byte, contentEncoding string) {
+func (a *api) recordUsage(lg *slog.Logger, connID, keyID string, body []byte, contentEncoding string) {
 	if contentEncoding == "gzip" {
 		if plain, err := gunzip(body); err == nil {
 			body = plain
@@ -166,11 +167,11 @@ func (a *api) recordUsage(connID, keyID string, body []byte, contentEncoding str
 	// is a convenience, not part of the proxy contract. Log it so a store fault
 	// (a lock, a full disk) is visible instead of losing counts in silence.
 	if err := a.store.AddUsage(day, connID, c.Model, c.InputTokens, c.OutputTokens); err != nil {
-		log.Printf("record usage for connection %s: %v", connID, err)
+		lg.Error("usage.record.fail", "connection", connID, "err", err)
 	}
 	if keyID != "" {
 		if err := a.store.AddKeyUsage(day, keyID, c.Model, c.InputTokens, c.OutputTokens); err != nil {
-			log.Printf("record usage for api key %s: %v", keyID, err)
+			lg.Error("usage.record.fail", "api_key_id", keyID, "err", err)
 		}
 	}
 }
@@ -193,7 +194,7 @@ func gunzip(b []byte) ([]byte, error) {
 // It returns a bounded copy of the body so the usage counter can be read without
 // a second upstream call. The tap only reads; the caller's bytes are written
 // first and are never altered by it.
-func streamBody(w http.ResponseWriter, resp *http.Response) []byte {
+func streamBody(lg *slog.Logger, w http.ResponseWriter, resp *http.Response) []byte {
 	rc := http.NewResponseController(w)
 	tap := &respTap{headLimit: usageTapHeadLimit, tailLimit: usageTapTailLimit}
 	buf := make([]byte, 32*1024)
@@ -211,7 +212,7 @@ func streamBody(w http.ResponseWriter, resp *http.Response) []byte {
 			if !errors.Is(readErr, io.EOF) {
 				// A stream cut in the middle still reaches the caller as a 200
 				// with a short body, so only this line says why it stopped.
-				log.Printf("upstream stream ended early: %v", readErr)
+				lg.Warn("proxy.stream.cut", "err", readErr)
 			}
 			return tap.bytes()
 		}
@@ -311,6 +312,15 @@ func sessionFor(providerID, secret string) string {
 	b[6] = b[6]&0x0f | 0x40
 	b[8] = b[8]&0x3f | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+}
+
+// respLog returns the logger of the call an answer belongs to, or the
+// server's logger for an answer with no request.
+func (a *api) respLog(resp *http.Response) *slog.Logger {
+	if resp == nil || resp.Request == nil {
+		return a.logger()
+	}
+	return a.logFor(resp.Request.Context())
 }
 
 // keyIDOf names the API key behind a response: the outbound request carries
@@ -474,7 +484,7 @@ func (a *api) relayVia(w http.ResponseWriter, resp *http.Response, connID, to, v
 		}
 		w.WriteHeader(resp.StatusCode)
 		w.Write(out)
-		a.recordUsage(connID, keyIDOf(resp), body, "")
+		a.recordUsage(a.respLog(resp), connID, keyIDOf(resp), body, "")
 		if watched(provider) {
 			a.drift.Observe(drift.Response, provider, path, body, false)
 		}
@@ -526,7 +536,7 @@ func (a *api) relayVia(w http.ResponseWriter, resp *http.Response, connID, to, v
 	// still reading a slow upstream, so close it and let the deferred
 	// resp.Body.Close release that goroutine.
 	pr.Close()
-	a.recordUsage(connID, keyIDOf(resp), tap.bytes(), "")
+	a.recordUsage(a.respLog(resp), connID, keyIDOf(resp), tap.bytes(), "")
 	if resp.StatusCode < 300 && watched(provider) {
 		a.drift.Observe(drift.Response, provider, path, raw.bytes(), true)
 	}
@@ -654,7 +664,7 @@ func collectChunks(via string, chunks io.Reader) []byte {
 func (a *api) sendWithRecovery(fc *failoverCall, acc accountTry, call *upstreamCall) (*http.Response, error) {
 	resp, err := a.sendLogged(fc.r, acc.p, acc.conn, call.path, acc.secret, call.send, acc.model)
 	if err != nil {
-		log.Printf("connection %s: %v", acc.conn.ID, err)
+		a.logFor(fc.r.Context()).Warn("proxy.account.fail", "connection", acc.conn.ID, "err", err)
 		a.releaseZenSession(fc.r)
 		return nil, err
 	}

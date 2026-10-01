@@ -2,8 +2,7 @@ package httpapi
 
 import (
 	"bytes"
-	"log"
-	"os"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -19,13 +18,12 @@ func TestRecordUsageLogsStoreError(t *testing.T) {
 	s.Close() // any write now fails
 
 	var logBuf bytes.Buffer
-	log.SetOutput(&logBuf)
-	defer log.SetOutput(os.Stderr)
+	lg := slog.New(slog.NewTextHandler(&logBuf, nil))
 
 	a := &api{store: s}
-	a.recordUsage(c.ID, "", []byte(`{"model":"m","usage":{"prompt_tokens":1,"completion_tokens":1}}`), "")
+	a.recordUsage(lg, c.ID, "", []byte(`{"model":"m","usage":{"prompt_tokens":1,"completion_tokens":1}}`), "")
 
-	if !strings.Contains(logBuf.String(), "record usage") {
+	if !strings.Contains(logBuf.String(), "usage.record.fail") {
 		t.Errorf("store error was not logged: %q", logBuf.String())
 	}
 }

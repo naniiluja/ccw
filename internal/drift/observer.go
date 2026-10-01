@@ -1,7 +1,7 @@
 package drift
 
 import (
-	"log"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -82,7 +82,7 @@ func newObserver(s *store.Store, background bool) *Observer {
 			kk.fields[f.Path] = &field{typ: f.Type, seen: f.Seen, firstObs: f.FirstObs, lastObs: f.LastObs, gone: f.Gone, lastAt: f.LastAt, legacy: f.Legacy}
 		}
 	} else {
-		log.Printf("drift: load: %v", err)
+		slog.Error("drift.load.fail", "err", err)
 	}
 	if background {
 		go o.run()
@@ -238,7 +238,7 @@ func (o *Observer) observe(dir, provider, endpoint, client, clientKeyID, event s
 	}
 	for _, c := range topmost(changes) {
 		if err := o.store.AddShapeChange(c); err != nil {
-			log.Printf("drift: %v", err)
+			slog.Error("drift.observe.fail", "err", err)
 		}
 	}
 }
@@ -281,7 +281,7 @@ func (o *Observer) Flush() {
 		return
 	}
 	if err := o.store.SaveShapes(counts, fields); err != nil {
-		log.Printf("drift: save: %v", err)
+		slog.Error("drift.save.fail", "err", err)
 		// The write failed, so restore the dirty marks: the next flush retries
 		// these observations instead of losing them.
 		o.mu.Lock()

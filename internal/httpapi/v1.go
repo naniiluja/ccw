@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log"
 	"net/http"
 	"slices"
 	"sort"
@@ -504,7 +503,7 @@ func (a *api) fetchCatalogEntry(ctx context.Context, prov string) catalogEntry {
 		pol := a.modelPolicy(prov)
 		added, err := a.store.SyncModels(prov, ids, live, pol.startsOn)
 		if err != nil {
-			log.Printf("models %s: %v", prov, err)
+			a.logFor(ctx).Error("models.sync.fail", "provider", prov, "err", err)
 		} else if pol.AutoTest && len(added) > 0 && a.auto.start(prov) {
 			go a.autoTestHeld(prov, added, false)
 		}
@@ -675,7 +674,7 @@ func (a *api) failover(w http.ResponseWriter, r *http.Request, body []byte, targ
 		if err != nil {
 			var skip errSkipAccount
 			if errors.As(err, &skip) {
-				log.Printf("connection %s: %v", acc.conn.ID, skip.err)
+				a.logFor(fc.r.Context()).Warn("proxy.account.skip", "connection", acc.conn.ID, "err", skip.err)
 				continue
 			}
 			writeError(w, http.StatusBadRequest, "cannot translate the request: "+err.Error())
@@ -697,7 +696,8 @@ func (a *api) failover(w http.ResponseWriter, r *http.Request, body []byte, targ
 		}
 		// Fail over on a busy status only while another account remains.
 		if retryableStatus(resp.StatusCode) {
-			log.Printf("connection %s: %s answered %d%s", acc.conn.ID, acc.conn.Provider, resp.StatusCode, modelNote(at.model))
+			a.logFor(fc.r.Context()).Warn("proxy.upstream.busy", "connection", acc.conn.ID,
+				"provider", acc.conn.Provider, "status", resp.StatusCode, "model", at.model)
 		}
 		if retryableStatus(resp.StatusCode) && i < len(attempts)-1 {
 			resp.Body.Close()
@@ -761,7 +761,7 @@ func (a *api) newFailoverCall(w http.ResponseWriter, r *http.Request, body []byt
 	if anthropic {
 		var dropped []string
 		body, dropped = servertools.FillClientTools(body)
-		logDropped(dropped)
+		logDropped(a.logFor(r.Context()), dropped)
 	}
 	// A client that asks its model to search declares Anthropic's hosted tool,
 	// which no other provider has: ccw runs the search and answers with it.
@@ -795,7 +795,7 @@ func (a *api) resolveAttempt(fc *failoverCall, at attempt) (accountTry, bool) {
 		run.used = at.conn.ID
 	}
 	if acc.secret, err = a.exchanged(ctx, acc.p, at.conn.ID, secret); err != nil {
-		log.Printf("connection %s: %v", at.conn.ID, err)
+		a.logFor(ctx).Warn("proxy.account.exchange.fail", "connection", at.conn.ID, "err", err)
 		return acc, false
 	}
 	acc.model, _ = bodyModel(fc.body)
@@ -898,7 +898,18 @@ func (a *api) send(r *http.Request, p provider.Provider, providerID, path, secre
 	// The answer is relayed to the caller, so the wait for the headers and the
 	// gap between two reads are bounded, never the whole call: a stream that
 	// keeps sending must reach the caller whole.
-	return upstream.DoStream(r.Context(), out, 1)
+	lg := a.logFor(r.Context()).With("provider", providerID, "path", path)
+	lg.Info("proxy.upstream.start")
+	start := time.Now()
+	resp, err := upstream.DoStream(r.Context(), out, 1)
+	ms := time.Since(start).Milliseconds()
+	if err != nil {
+		lg.Warn("proxy.upstream.fail", "duration_ms", ms, "err", err)
+		return nil, err
+	}
+	// done marks the answer's headers: a stream may still be arriving.
+	lg.Info("proxy.upstream.done", "status", resp.StatusCode, "duration_ms", ms)
+	return resp, nil
 }
 
 // activeConnections returns the active connections of one provider.
@@ -938,13 +949,6 @@ func firstNonEmpty(ss ...string) string {
 type errSkipAccount struct{ err error }
 
 func (e errSkipAccount) Error() string { return e.err.Error() }
-
-func modelNote(m string) string {
-	if m == "" {
-		return ""
-	}
-	return " on " + m
-}
 
 // checkMaxTokens refuses a Messages request whose max_tokens is missing or not
 // a positive integer, as the Messages API does; it returns the reason. A body

@@ -4,6 +4,7 @@ package httpapi
 import (
 	"compress/gzip"
 	"compress/zlib"
+	"context"
 	"crypto/rand"
 	_ "embed"
 	"encoding/hex"
@@ -11,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"strconv"
@@ -70,6 +72,30 @@ type api struct {
 	zen zenState
 	// web is the search service for a client that asks its model to search.
 	web webState
+	// log is the logger of work outside a /v1 call. A /v1 call logs through
+	// the logger its context carries, which adds the call's req_id.
+	log *slog.Logger
+}
+
+// logger returns the server's logger, or the default one for an api built
+// without the constructor.
+func (a *api) logger() *slog.Logger {
+	if a.log != nil {
+		return a.log
+	}
+	return slog.Default()
+}
+
+// logKey is the context key of a request's logger.
+type logKey struct{}
+
+// logFor returns the logger a request's context carries, which names its
+// req_id, or the server's logger outside a /v1 call.
+func (a *api) logFor(ctx context.Context) *slog.Logger {
+	if l, ok := ctx.Value(logKey{}).(*slog.Logger); ok {
+		return l
+	}
+	return a.logger()
 }
 
 // New builds the route table with no authentication (loopback use and tests).
@@ -87,7 +113,14 @@ func NewWithAuth(s *store.Store, baseOverride map[string]string, authCfg *auth.C
 
 // newServer builds the api and its routes; tests reach the api through it.
 func newServer(s *store.Store, baseOverride map[string]string, authCfg *auth.Config) (*api, http.Handler) {
+	return newServerWithLog(s, baseOverride, authCfg, slog.Default())
+}
+
+// newServerWithLog is newServer with its logger. The logger is set before the
+// background loops start, so none of them reads it while it changes.
+func newServerWithLog(s *store.Store, baseOverride map[string]string, authCfg *auth.Config, log *slog.Logger) (*api, http.Handler) {
 	a := &api{
+		log:          log,
 		store:        s,
 		baseOverride: baseOverride,
 		auth:         authCfg,
@@ -127,9 +160,9 @@ func (a *api) registerRoutes(mux *http.ServeMux) {
 	// One base URL: the model in the body picks the provider and its accounts.
 	// The contract of /v1 is public, like the API it describes.
 	mux.HandleFunc("GET /openapi.json", serveOpenAPI)
-	mux.HandleFunc("GET /v1/models", v1API(a.requireToken(a.models)))
-	mux.HandleFunc("GET /v1/models/{model...}", v1API(a.requireToken(a.model)))
-	mux.HandleFunc("/v1/{path...}", v1API(a.requireToken(a.v1)))
+	mux.HandleFunc("GET /v1/models", a.v1API(a.requireToken(a.models)))
+	mux.HandleFunc("GET /v1/models/{model...}", a.v1API(a.requireToken(a.model)))
+	mux.HandleFunc("/v1/{path...}", a.v1API(a.requireToken(a.v1)))
 	// Management API for machines: the same token as /v1.
 	mux.HandleFunc("GET /api/providers", a.requireToken(a.apiProviders))
 	mux.HandleFunc("GET /api/accounts", a.requireToken(a.accounts))
@@ -373,8 +406,10 @@ func (w apiWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 var requestIDHeaders = []string{"Request-Id", "X-Request-Id"}
 
 // v1API wraps a /v1 handler: the error shape by path, a request id, and an
-// answer to a CORS preflight, which /v1 does not serve.
-func v1API(next http.HandlerFunc) http.HandlerFunc {
+// answer to a CORS preflight, which /v1 does not serve. The request's context
+// carries a logger that names the id as req_id, so every line the call logs
+// can be found by the id its caller reads in Request-Id.
+func (a *api) v1API(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		shape := translate.OpenAI
 		if isAnthropicPath(r.URL.Path) {
@@ -386,6 +421,7 @@ func v1API(next http.HandlerFunc) http.HandlerFunc {
 		for _, h := range requestIDHeaders {
 			w.Header().Set(h, id)
 		}
+		r = r.WithContext(context.WithValue(r.Context(), logKey{}, a.logger().With("req_id", id)))
 		aw := apiWriter{ResponseWriter: w, shape: shape}
 		if r.Method == http.MethodOptions {
 			writeError(aw, http.StatusMethodNotAllowed, "CORS preflight is not served: call /v1 from a server, not a browser")
