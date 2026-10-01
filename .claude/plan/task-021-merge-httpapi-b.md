@@ -24,6 +24,7 @@ Gộp 15 file của đường chuyển tiếp và model thành 7 file theo khái
 - Không có test mới; toàn bộ test hiện có chạy nguyên vẹn, golden Zen không đổi.
 
 ## Files to touch
+- internal/provider/registry.go — chỉ sửa một comment trỏ tới `copilot.go` cũ (đổi sang `providers.go`)
 - internal/httpapi/models.go, internal/httpapi/autotest.go, internal/httpapi/typesafe.go
 - internal/httpapi/modelinfo.go, internal/httpapi/variants.go, internal/httpapi/rotation.go
 - internal/httpapi/proxy.go, internal/httpapi/shapes.go
