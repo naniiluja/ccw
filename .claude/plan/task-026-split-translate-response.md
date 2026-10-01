@@ -19,6 +19,8 @@ Giảm độ phức tạp các bộ dịch response và stream.
 - Test stream hiện có (`stream_trunc_test.go`, `zen_test.go`, `anthropic_reply_test.go`) giữ nguyên; thêm test đặc tả cho nhánh stream cụt và `[DONE]` nếu đo thấy chưa phủ.
 
 ## Files to touch
+- internal/translate/testdata/snapshot/*.golden — snapshot đặc tả byte-exact cho các stream converter (chỉ ghi lại bằng cờ `-update-snapshots`)
+- internal/translate/stream_snapshot_test.go — test đặc tả mới
 - internal/translate/zen.go
 - internal/translate/response.go
 - internal/translate/gemini.go
