@@ -35,9 +35,9 @@ Nguồn: `/Users/naniiluja/.claude/plans/optimized-giggling-gizmo.md`. Mục ti�
 | # | Slice | Layers | Gate (tests green) | Depends on | Status |
 |---|-------|--------|--------------------|-----------|--------|
 | 014 | Xóa contract lab và mọi thứ liên quan đến switcher (kèm cờ `trusted` của API key) | store + contract + httpapi + cmd + docs | `grep` switcher và contract lab rỗng; test hiện có xanh | — | in-review |
-| 015 | Xóa notify (Telegram, webhook) | store + httpapi | `grep` telegram và webhook rỗng; test review và OAuth xanh | 014 | todo |
+| 015 | Xóa notify (Telegram, webhook) | store + httpapi | `grep` telegram và webhook rỗng; test review và OAuth xanh | 014 | in-review |
 | 016 | Xóa ranking (bảng xếp hạng model) | httpapi | `grep` arena và ranking rỗng; `/v1/models` đủ trường cũ | 015 | todo |
-| 017 | Dọn code chết và lint (`provider.Generic`, `zen.SystemOneNames`, hai cảnh báo test) | provider + zen + httpapi | `staticcheck` xanh, `deadcode` rỗng | 014 | todo |
+| 017 | Dọn code chết và lint (`provider.Generic`, `zen.SystemOneNames`, hai cảnh báo test) | provider + zen + httpapi | `staticcheck` xanh, `deadcode` rỗng | 014 | in-review |
 | 018 | Đăng nhập bằng mật khẩu thay TOTP (`CCW_PASSWORD`, tự sinh lần đầu, `-reset-password`) | auth + cmd + httpapi | ma trận `CheckPassword`, DB chỉ chứa bản băm, 401 và 429 đúng | 014 | todo |
 | 019 | Chuyển loginguard vào `internal/auth` | auth + httpapi | test loginguard xanh ở `auth`, ngưỡng không đổi | 018 | todo |
 | 020 | Gộp file httpapi nhóm A (server, auth, oauth, tài khoản, key, filter) | httpapi | `go test -race ./...` xanh, một `// Package httpapi` | 016, 019 | todo |
