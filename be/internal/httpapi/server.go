@@ -176,6 +176,7 @@ func (a *api) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/accounts", a.requireToken(a.accounts))
 	mux.HandleFunc("POST /api/accounts/{id}/active", a.requireAdmin(a.setActive))
 	mux.HandleFunc("GET /api/zen/sessions", a.requireAdmin(a.zenSessions))
+	mux.HandleFunc("GET /api/settings", a.requireToken(a.getSettings))
 	mux.HandleFunc("GET /api/usage", a.requireToken(a.usage))
 	mux.HandleFunc("GET /api/quota", a.requireToken(a.quotaList(false)))
 	mux.HandleFunc("GET /quota", a.requireSession(a.quotaList(true)))
