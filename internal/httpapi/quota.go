@@ -64,56 +64,33 @@ type quotaCache struct {
 	flights   map[string]*quotaFlight
 }
 
+func newQuotaCache() quotaCache {
+	return quotaCache{m: map[string]AccountQuota{}, highWater: map[string]uint64{}, flights: map[string]*quotaFlight{}}
+}
+
 // quotaFetchers read an account's quota from the provider's own endpoint.
 var quotaFetchers = map[string]func(a *api, ctx context.Context, c store.Connection, token string) (AccountQuota, error){}
 
 // quotaFor returns an account's quota: from the provider when it has a quota
 // endpoint, otherwise from the rate-limit headers of its last answer.
+//
+// Without refresh, a cached read younger than quotaTTL answers, and callers
+// that miss together share one read (a flight). With refresh, the caller reads
+// on its own. Either way a read is stored only when its sequence number is
+// above the last one stored, so an older read never overwrites a newer one.
 func (a *api) quotaFor(ctx context.Context, c store.Connection, refresh bool) AccountQuota {
+	// The cache check, the flight join and the flight start share one lock
+	// hold, so two callers that miss together cannot both start a read.
 	a.quota.mu.Lock()
-	if a.quota.m == nil {
-		a.quota.m = map[string]AccountQuota{}
+	a.quota.ensureMaps()
+	if q, ok := a.quota.freshEntry(c.ID, refresh); ok {
+		a.quota.mu.Unlock()
+		return q
 	}
-	if a.quota.highWater == nil {
-		a.quota.highWater = map[string]uint64{}
+	if f := a.quota.joinableFlight(c.ID, refresh); f != nil {
+		a.quota.mu.Unlock()
+		return a.awaitQuotaFlight(ctx, c, f)
 	}
-	if a.quota.flights == nil {
-		a.quota.flights = map[string]*quotaFlight{}
-	}
-
-	q, hit := a.quota.m[c.ID]
-	if hit && !refresh {
-		if t, err := time.Parse(time.RFC3339, q.FetchedAt); err == nil && time.Since(t) < quotaTTL {
-			a.quota.mu.Unlock()
-			return q
-		}
-	}
-
-	hw := a.quota.highWater[c.ID]
-	if !refresh {
-		if f := a.quota.flights[c.ID]; f != nil && f.seq > hw {
-			done := f.done
-			a.quota.mu.Unlock()
-			select {
-			case <-done:
-				a.quota.mu.Lock()
-				cached, ok := a.quota.m[c.ID]
-				a.quota.mu.Unlock()
-				if ok {
-					return cached
-				}
-				return f.res
-			case <-ctx.Done():
-				return AccountQuota{
-					ConnectionID: c.ID, Provider: c.Provider, Label: c.Label,
-					Windows: []QuotaWindow{}, Resets: []QuotaReset{},
-					Error:     ctx.Err().Error(),
-					FetchedAt: time.Now().UTC().Format(time.RFC3339),
-				}
-			}
-		}
-	}
-
 	seq := a.quota.seq.Add(1)
 	var myFlight *quotaFlight
 	if !refresh {
@@ -122,86 +99,65 @@ func (a *api) quotaFor(ctx context.Context, c store.Connection, refresh bool) Ac
 	}
 	a.quota.mu.Unlock()
 
-	doFetch := func() AccountQuota {
-		res := AccountQuota{
-			ConnectionID: c.ID, Provider: c.Provider, Label: c.Label,
-			Windows: []QuotaWindow{}, Resets: []QuotaReset{},
-			FetchedAt: time.Now().UTC().Format(time.RFC3339),
-		}
-		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
-		defer cancel()
-		if fetch, ok := quotaFetchers[c.Provider]; ok {
-			token, err := a.secretFor(fctx, c.ID)
-			if err == nil {
-				var got AccountQuota
-				if got, err = fetch(a, fctx, c, token); err == nil {
-					got.ConnectionID, got.Provider, got.Label, got.Source, got.FetchedAt = c.ID, c.Provider, c.Label, "api", res.FetchedAt
-					if got.Windows == nil {
-						got.Windows = []QuotaWindow{}
-					}
-					if got.Resets == nil {
-						got.Resets = []QuotaReset{}
-					}
-					res = got
-				}
-			}
-			if err != nil {
-				res.Error = err.Error()
-			}
-		}
-		if len(res.Windows) == 0 {
-			if snap, ok := a.rate.get(c.ID); ok {
-				res.Windows = windowsFromHeaders(snap.Headers)
-				res.Source = "headers"
-				if len(res.Windows) > 0 {
-					res.Error = ""
-				}
-			}
-		}
-		if res.Windows == nil {
-			res.Windows = []QuotaWindow{}
-		}
-		if res.Resets == nil {
-			res.Resets = []QuotaReset{}
-		}
-		return res
-	}
-
 	if refresh {
-		res := doFetch()
-		a.quota.mu.Lock()
-		if seq > a.quota.highWater[c.ID] {
-			a.quota.highWater[c.ID] = seq
-			a.quota.m[c.ID] = res
-		}
-		a.quota.mu.Unlock()
+		res := a.fetchQuota(ctx, c)
+		a.storeQuota(c.ID, seq, res, nil)
 		return res
 	}
+	go a.leadQuotaFlight(ctx, c, seq, myFlight)
+	return a.awaitQuotaFlight(ctx, c, myFlight)
+}
 
-	go func() {
-		res := doFetch()
-		a.quota.mu.Lock()
-		if seq > a.quota.highWater[c.ID] {
-			a.quota.highWater[c.ID] = seq
-			a.quota.m[c.ID] = res
-		}
-		myFlight.res = res
-		close(myFlight.done)
-		if a.quota.flights[c.ID] == myFlight {
-			delete(a.quota.flights, c.ID)
-		}
-		a.quota.mu.Unlock()
-	}()
+// ensureMaps makes the maps of a zero quotaCache. The caller holds q.mu.
+func (q *quotaCache) ensureMaps() {
+	if q.m == nil {
+		q.m = map[string]AccountQuota{}
+	}
+	if q.highWater == nil {
+		q.highWater = map[string]uint64{}
+	}
+	if q.flights == nil {
+		q.flights = map[string]*quotaFlight{}
+	}
+}
 
+// freshEntry returns the cached read of a connection when it is younger than
+// quotaTTL and refresh is off. The caller holds q.mu.
+func (q *quotaCache) freshEntry(connID string, refresh bool) (AccountQuota, bool) {
+	cached, hit := q.m[connID]
+	if !hit || refresh {
+		return AccountQuota{}, false
+	}
+	if t, err := time.Parse(time.RFC3339, cached.FetchedAt); err == nil && time.Since(t) < quotaTTL {
+		return cached, true
+	}
+	return AccountQuota{}, false
+}
+
+// joinableFlight returns the read in flight for a connection when it started
+// after the last stored read and refresh is off. The caller holds q.mu.
+func (q *quotaCache) joinableFlight(connID string, refresh bool) *quotaFlight {
+	if refresh {
+		return nil
+	}
+	if f := q.flights[connID]; f != nil && f.seq > q.highWater[connID] {
+		return f
+	}
+	return nil
+}
+
+// awaitQuotaFlight waits for a flight, or for ctx. A finished flight answers
+// with the cache, which a newer read may have replaced, else its own result.
+func (a *api) awaitQuotaFlight(ctx context.Context, c store.Connection, f *quotaFlight) AccountQuota {
 	select {
-	case <-myFlight.done:
+	case <-f.done:
 		a.quota.mu.Lock()
 		cached, ok := a.quota.m[c.ID]
 		a.quota.mu.Unlock()
 		if ok {
 			return cached
 		}
-		return myFlight.res
+		return f.res
 	case <-ctx.Done():
 		return AccountQuota{
 			ConnectionID: c.ID, Provider: c.Provider, Label: c.Label,
@@ -210,6 +166,72 @@ func (a *api) quotaFor(ctx context.Context, c store.Connection, refresh bool) Ac
 			FetchedAt: time.Now().UTC().Format(time.RFC3339),
 		}
 	}
+}
+
+// leadQuotaFlight runs the read of a flight, stores it and ends the flight.
+func (a *api) leadQuotaFlight(ctx context.Context, c store.Connection, seq uint64, f *quotaFlight) {
+	a.storeQuota(c.ID, seq, a.fetchQuota(ctx, c), f)
+}
+
+// storeQuota stores a read under the sequence rule. With a flight, it also
+// hands the read to the flight's waiters and ends the flight.
+func (a *api) storeQuota(connID string, seq uint64, res AccountQuota, f *quotaFlight) {
+	a.quota.mu.Lock()
+	defer a.quota.mu.Unlock()
+	if seq > a.quota.highWater[connID] {
+		a.quota.highWater[connID] = seq
+		a.quota.m[connID] = res
+	}
+	if f == nil {
+		return
+	}
+	f.res = res
+	close(f.done)
+	if a.quota.flights[connID] == f {
+		delete(a.quota.flights, connID)
+	}
+}
+
+// fetchQuota reads a connection's quota from its provider's endpoint, and
+// falls back to the rate-limit headers of its last answer when that gives no
+// window. Windows and Resets are never nil.
+func (a *api) fetchQuota(ctx context.Context, c store.Connection) AccountQuota {
+	res := AccountQuota{
+		ConnectionID: c.ID, Provider: c.Provider, Label: c.Label,
+		Windows: []QuotaWindow{}, Resets: []QuotaReset{},
+		FetchedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
+	defer cancel()
+	if fetch, ok := quotaFetchers[c.Provider]; ok {
+		token, err := a.secretFor(fctx, c.ID)
+		if err == nil {
+			var got AccountQuota
+			if got, err = fetch(a, fctx, c, token); err == nil {
+				got.ConnectionID, got.Provider, got.Label, got.Source, got.FetchedAt = c.ID, c.Provider, c.Label, "api", res.FetchedAt
+				res = got
+			}
+		}
+		if err != nil {
+			res.Error = err.Error()
+		}
+	}
+	if len(res.Windows) == 0 {
+		if snap, ok := a.rate.get(c.ID); ok {
+			res.Windows = windowsFromHeaders(snap.Headers)
+			res.Source = "headers"
+			if len(res.Windows) > 0 {
+				res.Error = ""
+			}
+		}
+	}
+	if res.Windows == nil {
+		res.Windows = []QuotaWindow{}
+	}
+	if res.Resets == nil {
+		res.Resets = []QuotaReset{}
+	}
+	return res
 }
 
 // freshQuota calls the fetcher directly, no header fallback, no flight,
@@ -413,6 +435,10 @@ func windowName(mins int) string {
 type rateHeaders struct {
 	mu sync.Mutex
 	m  map[string]rateSnapshot
+}
+
+func newRateHeaders() rateHeaders {
+	return rateHeaders{m: map[string]rateSnapshot{}}
 }
 
 type rateSnapshot struct {

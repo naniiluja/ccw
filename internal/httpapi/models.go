@@ -325,6 +325,10 @@ type autoState struct {
 	running map[string]*autoRun
 }
 
+func newAutoState() autoState {
+	return autoState{running: map[string]*autoRun{}}
+}
+
 type autoRun struct {
 	ctx    context.Context
 	cancel context.CancelFunc

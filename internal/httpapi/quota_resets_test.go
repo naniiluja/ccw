@@ -132,6 +132,72 @@ func TestClaudeResetRowsMapper(t *testing.T) {
 	}
 }
 
+// TestClaudeResetRowsBlockedReasons pins the order of the blocked rules, the
+// clamping of negative counts and the id rules of claudeResetRows.
+func TestClaudeResetRowsBlockedReasons(t *testing.T) {
+	now := time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
+	grant := func(extra map[string]any) map[string]any {
+		g := map[string]any{"id": "g", "resets_left": json.Number("1"), "resets_total": json.Number("1"), "usable_now": true}
+		for k, v := range extra {
+			g[k] = v
+		}
+		return g
+	}
+	cases := []struct {
+		name    string
+		usage   map[string]any
+		wantIDs []string
+		want    []string // Blocked of each row, "" when usable
+	}{
+		{"weekly used", map[string]any{"juniper_tide": map[string]any{"available": false, "next_available_at": "2026-09-30T00:00:00Z"}},
+			[]string{"weekly"}, []string{"used"}},
+		{"weekly not at limit", map[string]any{"juniper_tide": map[string]any{"available": false}},
+			[]string{"weekly"}, []string{"not_at_limit"}},
+		{"cooldown beats paused", map[string]any{"cedar_ember": map[string]any{"cooldown_until": "2026-09-23T13:00:00Z",
+			"grants": []any{grant(map[string]any{"paused": true})}}},
+			[]string{"grant:g"}, []string{"cooldown"}},
+		{"past cooldown is ignored", map[string]any{"cedar_ember": map[string]any{"cooldown_until": "2026-09-23T11:00:00Z",
+			"grants": []any{grant(nil)}}},
+			[]string{"grant:g"}, []string{""}},
+		{"not started", map[string]any{"cedar_ember": map[string]any{"grants": []any{grant(map[string]any{"starts_at": "2026-09-24T00:00:00Z"})}}},
+			[]string{"grant:g"}, []string{"not_started"}},
+		{"expired", map[string]any{"cedar_ember": map[string]any{"grants": []any{grant(map[string]any{"ends_at": "2026-09-23T12:00:00Z"})}}},
+			[]string{"grant:g"}, []string{"expired"}},
+		{"used", map[string]any{"cedar_ember": map[string]any{"grants": []any{grant(map[string]any{"resets_left": json.Number("0")})}}},
+			[]string{"grant:g"}, []string{"used"}},
+		{"not usable now", map[string]any{"cedar_ember": map[string]any{"grants": []any{grant(map[string]any{"usable_now": false})}}},
+			[]string{"grant:g"}, []string{"not_at_limit"}},
+		{"non-object grant, empty and repeated ids", map[string]any{"cedar_ember": map[string]any{"grants": []any{
+			"junk", grant(map[string]any{"id": ""}), grant(nil), grant(nil)}}},
+			[]string{"bad:2", "grant:g", "bad:4"}, []string{"bad_id", "", "bad_id"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rows := claudeResetRows(tc.usage, now)
+			if len(rows) != len(tc.want) {
+				t.Fatalf("rows = %+v, want %d", rows, len(tc.want))
+			}
+			for i, r := range rows {
+				if r.ID != tc.wantIDs[i] || r.Blocked != tc.want[i] || r.Usable != (tc.want[i] == "") {
+					t.Errorf("row %d = %+v, want id %q blocked %q", i, r, tc.wantIDs[i], tc.want[i])
+				}
+			}
+		})
+	}
+
+	// Negative counts clamp to zero; a missing label is "Grant".
+	rows := claudeResetRows(map[string]any{
+		"juniper_tide": map[string]any{"available": true, "resets_per_week": json.Number("-2")},
+		"cedar_ember":  map[string]any{"grants": []any{grant(map[string]any{"resets_left": json.Number("-1"), "resets_total": json.Number("-3")})}},
+	}, now)
+	if len(rows) != 2 || rows[0].Total != 0 || rows[1].Left != 0 || rows[1].Total != 0 || rows[1].Title != "Grant" {
+		t.Errorf("clamped rows = %+v", rows)
+	}
+	if rows[1].Clears == nil || len(rows[1].Clears) != 0 {
+		t.Errorf("grant without clears = %#v, want empty non-nil", rows[1].Clears)
+	}
+}
+
 // Mapper test for Codex reset rows.
 func TestCodexResetRowsMapper(t *testing.T) {
 	now := time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
