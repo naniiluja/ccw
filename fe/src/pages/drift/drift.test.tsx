@@ -163,6 +163,17 @@ describe('Drift page', () => {
     await waitFor(() => expect(router.state.location.search).not.toContain('change='))
   })
 
+  it('drops ?change= from the URL after the change is acknowledged from the sheet', async () => {
+    useSession()
+    const calls = mockDrift()
+    const user = userEvent.setup()
+    const { router } = renderApp('/drift?change=1')
+    const sheet = await screen.findByRole('dialog')
+    await user.click(within(sheet).getByRole('button', { name: 'Xác nhận thay đổi' }))
+    await waitFor(() => expect(calls.acks).toEqual([{ ids: [1] }]))
+    await waitFor(() => expect(router.state.location.search).not.toContain('change='))
+  })
+
   it('opens the old and new diff and the sample in a sheet', async () => {
     useSession()
     mockDrift()
