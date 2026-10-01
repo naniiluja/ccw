@@ -220,7 +220,7 @@ export default function ErrorsPage() {
         value={tab}
         onValueChange={(v) => update({ tab: v === 'list' ? '' : v })}
       >
-        <TabsList className="w-full justify-start overflow-x-auto sm:w-fit">
+        <TabsList className="w-full justify-start overflow-x-auto sm:w-fit sm:overflow-visible">
           <TabsTrigger value="list">Danh sách lỗi</TabsTrigger>
           <TabsTrigger value="groups">Nhóm theo chữ ký</TabsTrigger>
           <TabsTrigger value="review">AI review</TabsTrigger>

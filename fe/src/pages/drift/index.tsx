@@ -50,7 +50,7 @@ export default function DriftPage() {
           )
         }
       >
-        <TabsList className="max-w-full overflow-x-auto">
+        <TabsList className="max-w-full overflow-x-auto sm:overflow-visible">
           <TabsTrigger value="changes">Thay đổi</TabsTrigger>
           <TabsTrigger value="fields">Trường theo dõi</TabsTrigger>
           <TabsTrigger value="config">Cấu hình</TabsTrigger>

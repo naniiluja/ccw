@@ -44,7 +44,7 @@ interface RowProps {
 // Row is one setting: its name, the value in force and the variable behind it.
 function Row({ label, env, children }: RowProps) {
   return (
-    <div className="grid gap-1 py-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_auto] sm:items-center sm:gap-4">
+    <div className="grid gap-1 py-3 sm:grid-cols-[12rem_minmax(0,1fr)_auto] sm:items-center sm:gap-4">
       <dt className="text-sm font-medium">{label}</dt>
       <dd className="min-w-0 text-sm break-words [overflow-wrap:anywhere]">
         {children}
