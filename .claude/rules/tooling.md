@@ -5,7 +5,7 @@ Danh mục công cụ của dự án kèm **khi nào dùng**, để agent ở ph
 ## MCP servers
 - **context7** (plugin ccf): tra tài liệu hiện hành của thư viện, framework. **Dùng khi:** cần cú pháp API, best practice, migration. Cách: `resolve-library-id` rồi `query-docs`. Phiên không tương tác có thể bị từ chối quyền gọi; khi đó fetch tài liệu chính thức (`go.dev`, `pkg.go.dev`, `sqlite.org`) và ghi rõ nguồn.
 - **microsoft-learn** (plugin ccf): tài liệu Microsoft, .NET, Azure. Dự án Go này thường không cần.
-- **shadcn** (khai báo ở `.mcp.json`, chạy `npx -y shadcn@latest mcp`): tra cứu component shadcn/ui. **Dùng khi:** cần tham khảo markup một component để mô phỏng. UI cũ đã gỡ, bản viết lại chưa chọn stack; chưa chạy lệnh `add` cho tới khi có `components.json` và quyết định stack.
+- **shadcn** (khai báo ở `.mcp.json`, chạy `npx -y shadcn@latest mcp`): tra cứu và xem component shadcn/ui và registry `@originui` (`fe/components.json`). **Dùng khi:** thêm hay xem một component; thêm bằng `pnpm -C fe ui:add <tên>` (= `pnpm dlx shadcn@4.21.0 add`), không viết tay vào `fe/src/components/ui/`. Sự cố đã gặp: cache `npx` hỏng với `Cannot find module '../llhttp/llhttp-wasm.js'`; cách tránh là chạy shadcn CLI qua `pnpm dlx` (như script `ui:add`), đừng dựa vào `npx`.
 - **gopls** (nếu phiên có, không khai báo trong `.mcp.json`): `go_symbol_references`, `go_file_context`, `go_diagnostics`. **Dùng khi:** xóa, gộp hay đổi tên symbol, để không sót tham chiếu. Có thể không resolve bên trong một git worktree; khi đó dùng `grep` và `go build ./...`.
 
 ## Skills
@@ -25,7 +25,8 @@ Mọi subagent CCF **chỉ đọc**: khám phá, review, tìm best practice, kh�
 ## Lệnh thường dùng
 - Kiểm toàn bộ trước commit: `bash scripts/check.sh` (gofmt, go vet, staticcheck, gocyclo, `go test -race ./...` gồm test kiến trúc). Giống hệt CI. Lần đầu tải staticcheck, gocyclo và toolchain `go1.27.1` qua `go run`, nên cần mạng.
 - Build: `cd be && go build ./...`. Chạy cục bộ: `cd be && go run ./cmd/ccw -addr 127.0.0.1:20130 -db ccw.db`. Lần chạy đầu in mật khẩu dashboard **một lần** ra stderr (lưu ngay vào trình quản lý mật khẩu); hoặc đặt `CCW_PASSWORD` (tối thiểu 12 ký tự). Quên mật khẩu: `cd be && go run ./cmd/ccw -db ccw.db -reset-password`. Thử nghiệm dùng DB tạm (`-db /tmp/ccw-check.db`), không dùng DB thật.
-- Đo nhanh (trong `be/`): `find internal cmd -name '*.go' -not -name '*_test.go' | wc -l` (72), `find internal/httpapi -maxdepth 1 -name '*.go' -not -name '*_test.go' | wc -l` (21), `go run golang.org/x/tools/cmd/deadcode@latest -test ./...` khi dọn code chết.
+- Đo nhanh (trong `be/`): `find internal cmd -name '*.go' -not -name '*_test.go' | wc -l` (75), `find internal/httpapi -maxdepth 1 -name '*.go' -not -name '*_test.go' | wc -l` (23), `go run golang.org/x/tools/cmd/deadcode@latest -test ./...` khi dọn code chết.
+- Frontend (từ gốc repo): `pnpm -C fe install --frozen-lockfile`, `pnpm -C fe dev` (Vite), `pnpm -C fe lint`, `pnpm -C fe typecheck`, `pnpm -C fe test`, `pnpm -C fe build`. Nhúng vào binary: `bash scripts/ui-build.sh` (install, build, xóa `be/internal/webui/static/` trừ `.gitkeep`, copy `fe/dist/.`; chạy lại nhiều lần cho kết quả giống nhau), rồi `cd be && go build ./cmd/ccw`. Các tệp trong `static/` bị gitignore: `git status` không được thấy chúng.
 - Build npm đa nền tảng: `scripts/npm-build.sh` (cần `NPM_SCOPE` khi publish). Không publish thủ công; release đi qua tag `v*`.
 
 ## System memory vs Spec (ghi ở đâu)

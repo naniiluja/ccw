@@ -15,6 +15,9 @@ Mỗi luật ghi kèm **cách kiểm**:
 - Đúng một comment `// Package x ...` mỗi package (lệnh dùng `// Command x ...`). `[tool]` `TestEachPackageHasExactlyOnePackageComment`.
 - Không vòng import, chỉ `cmd/ccw` import `internal/httpapi`, `store` không import `httpapi`/`translate`/`drift`. `[tool]` các test trong `arch_test.go`, chi tiết ở `architecture.md`.
 
+## Frontend
+Luật cho `fe/` nằm ở `frontend.md`; cổng `pnpm lint`, `typecheck`, `test`, `build` chạy trong `scripts/check.sh`.
+
 ## Cấu trúc package
 - Không tạo package mới trước khi có nhu cầu thật (hai nơi dùng độc lập, hoặc một ranh giới phụ thuộc cần bảo vệ). Một package 15 đến 20 file là bình thường (`net/http` có 17). `internal/httpapi` hiện có 21 file không test. `[review]` `go list ./...` trong diff.
 - Interface nhỏ, khai báo ở **phía dùng**, chỉ khi có từ hai cài đặt hoặc cần seam cho test. Hiện có ba: `translate.Signatures`, `translate.Flusher`, `websearch.Searcher`. `[review]` `grep -rn '^type [A-Za-z]* interface' --include='*.go' internal`.

@@ -162,11 +162,56 @@ func TestReleaseWorkflowGatesPublishOnTests(t *testing.T) {
 	if publish == "" {
 		t.Fatal("workflow has no publish job")
 	}
-	if !strings.Contains(publish, "needs: test") {
-		t.Error("publish job does not declare needs: test")
+	if !publishNeeds(publish, "test") {
+		t.Error("publish job does not wait for the test job")
 	}
 	if !strings.Contains(publish, "startsWith(github.ref, 'refs/tags/v')") {
 		t.Error("publish job is not limited to v* tags")
+	}
+}
+
+// publishNeeds reports whether a job's needs line lists name, in the scalar
+// form (needs: test) or the list form (needs: [test, frontend]).
+func publishNeeds(job, name string) bool {
+	for _, line := range strings.Split(job, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "needs:") {
+			continue
+		}
+		rest := strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "needs:")), "[]")
+		for _, n := range strings.Split(rest, ",") {
+			if strings.TrimSpace(n) == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// TestPublishBuildsTheUIBeforeTheBinaries keeps a release from shipping a
+// binary with an empty embedded UI: the publish job installs pnpm and Node
+// before its Build step, and npm-build.sh runs ui-build.sh before go build.
+func TestPublishBuildsTheUIBeforeTheBinaries(t *testing.T) {
+	publish := workflowJob(repoFile(t, ".github/workflows/github-packages.yml"), "publish")
+	build := strings.Index(publish, "name: Build")
+	pnpm := strings.Index(publish, "pnpm/action-setup")
+	node := strings.Index(publish, "actions/setup-node")
+	if build < 0 || pnpm < 0 || node < 0 || pnpm > build || node > build {
+		t.Errorf("publish must install Node and pnpm before Build (build %d, pnpm %d, node %d)", build, pnpm, node)
+	}
+	if !publishNeeds(publish, "frontend") {
+		t.Error("publish job does not wait for the frontend job")
+	}
+	script := repoFile(t, "scripts/npm-build.sh")
+	ui, goBuild := strings.Index(script, "ui-build.sh"), strings.Index(script, "go build")
+	if ui < 0 || goBuild < 0 || ui > goBuild {
+		t.Errorf("npm-build.sh must run ui-build.sh before go build (ui %d, go build %d)", ui, goBuild)
+	}
+	ubs := repoFile(t, "scripts/ui-build.sh")
+	for _, want := range []string{"pnpm -C fe install --frozen-lockfile", "pnpm -C fe build", "be/internal/webui/static"} {
+		if !strings.Contains(ubs, want) {
+			t.Errorf("scripts/ui-build.sh misses %q", want)
+		}
 	}
 }
 

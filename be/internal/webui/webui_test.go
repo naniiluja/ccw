@@ -3,6 +3,7 @@ package webui
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -69,6 +70,18 @@ func TestBuiltUIServesIndexAssetsAndDeepLinks(t *testing.T) {
 		if got := rec.Header().Get("Cache-Control"); got != c.cache {
 			t.Errorf("%s %s: Cache-Control %q, want %q", c.method, c.path, got, c.cache)
 		}
+	}
+}
+
+// TestBuiltIndexIsServedAtUI reads the real static/index.html that
+// scripts/ui-build.sh copies in. Without a build there is nothing to check.
+func TestBuiltIndexIsServedAtUI(t *testing.T) {
+	if _, err := os.Stat("static/index.html"); err != nil {
+		t.Skip("static/index.html is not built; run scripts/ui-build.sh")
+	}
+	rec := do(Handler(), "GET", "/ui/")
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `<div id="root">`) {
+		t.Errorf("GET /ui/: %d, body lacks the root element", rec.Code)
 	}
 }
 
