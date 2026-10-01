@@ -17,6 +17,7 @@ import { PageHeader } from '@/components/app/page-header'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import {
   Empty,
   EmptyDescription,
@@ -44,26 +45,22 @@ function ViewSwitch({
   onChange: (v: QuotaView) => void
 }) {
   return (
-    <div
-      role="radiogroup"
+    <ToggleGroup
+      type="single"
+      variant="outline"
+      size="sm"
       aria-label="Chế độ xem"
-      className="inline-flex rounded-md border p-0.5"
+      value={value}
+      // Radix reports an empty string when the pressed item is pressed again.
+      onValueChange={(v) => v && onChange(v as QuotaView)}
     >
       {views.map(({ value: v, label, icon: Icon }) => (
-        <Button
-          key={v}
-          type="button"
-          role="radio"
-          aria-checked={value === v}
-          variant={value === v ? 'secondary' : 'ghost'}
-          size="sm"
-          onClick={() => onChange(v)}
-        >
-          <Icon data-icon="inline-start" aria-hidden="true" />
+        <ToggleGroupItem key={v} value={v}>
+          <Icon aria-hidden="true" />
           {label}
-        </Button>
+        </ToggleGroupItem>
       ))}
-    </div>
+    </ToggleGroup>
   )
 }
 

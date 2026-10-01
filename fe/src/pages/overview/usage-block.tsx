@@ -20,6 +20,14 @@ import {
   EmptyMedia,
   EmptyTitle,
 } from '@/components/ui/empty'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table'
 import { BlockError, BlockSkeleton } from './block'
 import { formatNumber } from './format'
 
@@ -122,26 +130,26 @@ export function UsageBlock() {
         <figcaption className="text-xs text-muted-foreground tabular-nums">
           {days.length} ngày gần nhất · {formatNumber(totals.requests)} request.
         </figcaption>
-        <table className="sr-only" aria-label="Bảng số liệu usage 14 ngày gần nhất">
-          <thead>
-            <tr>
-              <th scope="col">Ngày</th>
-              <th scope="col">Token vào</th>
-              <th scope="col">Token ra</th>
-              <th scope="col">Số request</th>
-            </tr>
-          </thead>
-          <tbody>
+        <Table className="sr-only" aria-label="Bảng số liệu usage 14 ngày gần nhất">
+          <TableHeader>
+            <TableRow>
+              <TableHead>Ngày</TableHead>
+              <TableHead>Token vào</TableHead>
+              <TableHead>Token ra</TableHead>
+              <TableHead>Số request</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {days.map((d) => (
-              <tr key={d.day}>
-                <th scope="row">{d.day}</th>
-                <td>{formatNumber(d.inputTokens)}</td>
-                <td>{formatNumber(d.outputTokens)}</td>
-                <td>{formatNumber(d.requests)}</td>
-              </tr>
+              <TableRow key={d.day}>
+                <TableCell>{d.day}</TableCell>
+                <TableCell>{formatNumber(d.inputTokens)}</TableCell>
+                <TableCell>{formatNumber(d.outputTokens)}</TableCell>
+                <TableCell>{formatNumber(d.requests)}</TableCell>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       </figure>
     )
   }
