@@ -3,8 +3,10 @@ package httpapi
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/naniiluja/ccw/internal/store"
@@ -162,4 +164,83 @@ func (a *api) keyByID(id string) (store.APIKey, bool) {
 		}
 	}
 	return store.APIKey{}, false
+}
+
+// maxKeyRPM bounds a key's cap, and with it the timestamps kept per key.
+const maxKeyRPM = 100000
+
+// keyLimiter counts each API key's requests in the last 60 seconds.
+type keyLimiter struct {
+	mu   sync.Mutex
+	seen map[string][]time.Time
+}
+
+// allow records a request by key at now when the key made fewer than rpm in
+// the minute before. Otherwise it records nothing and returns how long until
+// the oldest of those leaves the window.
+func (l *keyLimiter) allow(key string, rpm int, now time.Time) (bool, time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	ts := l.window(key, now)
+	if len(ts) >= rpm {
+		return false, ts[len(ts)-rpm].Add(time.Minute).Sub(now)
+	}
+	l.seen[key] = append(ts, now)
+	return true, 0
+}
+
+// count returns the requests key made in the minute before now.
+func (l *keyLimiter) count(key string, now time.Time) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.window(key, now))
+}
+
+func (l *keyLimiter) window(key string, now time.Time) []time.Time {
+	ts := l.seen[key]
+	i := 0
+	for i < len(ts) && !ts[i].After(now.Add(-time.Minute)) {
+		i++
+	}
+	ts = ts[i:]
+	if len(ts) == 0 {
+		delete(l.seen, key)
+		return nil
+	}
+	l.seen[key] = ts
+	return ts
+}
+
+// ccw keeps stored timestamps in UTC, which is correct for comparison. The
+// one value a person reads as a calendar day is the usage total, so its day
+// boundary must follow the operator's clock, not UTC. On a GMT+7 server a UTC
+// day rolls the total over at 07:00 local; a local day rolls it at midnight.
+
+var (
+	tzOnce sync.Once
+	tzLoc  *time.Location
+)
+
+// reportLocation is the zone the usage day boundary follows. CCW_TZ names an
+// IANA zone (for example "Asia/Bangkok"); when it is empty or unknown, the zone
+// is a fixed GMT+7, which is Vietnam's offset all year (no daylight saving).
+func reportLocation() *time.Location {
+	tzOnce.Do(func() {
+		if name := os.Getenv("CCW_TZ"); name != "" {
+			if loc, err := time.LoadLocation(name); err == nil {
+				tzLoc = loc
+				return
+			}
+		}
+		tzLoc = time.FixedZone("+07", 7*60*60)
+	})
+	return tzLoc
+}
+
+// usageDay is the calendar day of t in the report zone, as "2006-01-02".
+func usageDay(t time.Time) string { return usageDayIn(t, reportLocation()) }
+
+// usageDayIn is the testable core of usageDay.
+func usageDayIn(t time.Time, loc *time.Location) string {
+	return t.In(loc).Format("2006-01-02")
 }

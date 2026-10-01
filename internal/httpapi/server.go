@@ -2,6 +2,15 @@
 package httpapi
 
 import (
+	"compress/gzip"
+	"compress/zlib"
+	"crypto/rand"
+	_ "embed"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"strconv"
@@ -12,6 +21,7 @@ import (
 	"github.com/naniiluja/ccw/internal/auth"
 	"github.com/naniiluja/ccw/internal/drift"
 	"github.com/naniiluja/ccw/internal/store"
+	"github.com/naniiluja/ccw/internal/translate"
 )
 
 const sessionCookie = "ccw_session"
@@ -314,4 +324,182 @@ func bearerToken(r *http.Request) string {
 		tok = b
 	}
 	return tok
+}
+
+// openAPIDoc describes the /v1 surface. Keep it in step with the routes in
+// newServer and the envelopes in writeAPIError; TestOpenAPIDocNamesEveryRoute
+// fails when a /v1 route is missing from it.
+//
+//go:embed openapi.json
+var openAPIDoc []byte
+
+func serveOpenAPI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(openAPIDoc)
+}
+
+// apiWriter marks a /v1 response with the shape its caller reads, so every
+// error ccw raises there leaves in that API's own envelope. Dashboard and
+// management routes keep {"error": "<message>"}.
+type apiWriter struct {
+	http.ResponseWriter
+	shape string
+}
+
+func (w apiWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// requestIDHeaders carry one id per /v1 call. An upstream's own id replaces it
+// when the answer is relayed, so a provider ticket can still quote it.
+var requestIDHeaders = []string{"Request-Id", "X-Request-Id"}
+
+// v1API wraps a /v1 handler: the error shape by path, a request id, and an
+// answer to a CORS preflight, which /v1 does not serve.
+func v1API(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		shape := translate.OpenAI
+		if isAnthropicPath(r.URL.Path) {
+			shape = translate.Anthropic
+		}
+		b := make([]byte, 12)
+		rand.Read(b)
+		id := "req_" + hex.EncodeToString(b)
+		for _, h := range requestIDHeaders {
+			w.Header().Set(h, id)
+		}
+		aw := apiWriter{ResponseWriter: w, shape: shape}
+		if r.Method == http.MethodOptions {
+			writeError(aw, http.StatusMethodNotAllowed, "CORS preflight is not served: call /v1 from a server, not a browser")
+			return
+		}
+		next(aw, r)
+	}
+}
+
+// isAnthropicPath covers the Messages family, count_tokens included. The
+// server has already collapsed a doubled /v1.
+func isAnthropicPath(p string) bool {
+	return p == "/v1/messages" || strings.HasPrefix(p, "/v1/messages/")
+}
+
+// writeAPIError answers with an error in the caller's envelope. code and param
+// are OpenAI's optional fields; the Anthropic envelope has no such fields.
+func writeAPIError(w http.ResponseWriter, status int, code, param, msg string) {
+	aw, ok := findAPIWriter(w)
+	if !ok {
+		writeLegacyError(w, status, msg)
+		return
+	}
+	var body any
+	if aw.shape == translate.Anthropic {
+		body = map[string]any{"type": "error", "error": map[string]any{"type": translate.AnthropicErrorType(status, ""), "message": msg}}
+	} else {
+		typ := "invalid_request_error"
+		switch {
+		case status == http.StatusTooManyRequests:
+			typ = "requests"
+			if code == "" {
+				code = "rate_limit_exceeded"
+			}
+		case status == http.StatusUnauthorized:
+			if code == "" {
+				code = "invalid_api_key"
+			}
+		case status >= 500:
+			typ = "server_error"
+		}
+		e := map[string]any{"message": msg, "type": typ, "param": nil, "code": nil}
+		if code != "" {
+			e["code"] = code
+		}
+		if param != "" {
+			e["param"] = param
+		}
+		body = map[string]any{"error": e}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	b, _ := json.Marshal(body)
+	w.Write(b)
+}
+
+// findAPIWriter looks through writers that wrap the /v1 one.
+func findAPIWriter(w http.ResponseWriter) (apiWriter, bool) {
+	for {
+		if aw, ok := w.(apiWriter); ok {
+			return aw, true
+		}
+		u, ok := w.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			return apiWriter{}, false
+		}
+		w = u.Unwrap()
+	}
+}
+
+// maxV1Body bounds a /v1 request, before and after it is decompressed. A call
+// carries whole conversations and screenshots, so the bound is generous: it is
+// there to keep one request from filling the memory, not to shape a prompt.
+var maxV1Body int64 = 50 << 20
+
+// readBody reads a /v1 request body and undoes a gzip or deflate Content-Encoding,
+// so everything after it sees the JSON. It reports the status to answer with when
+// the body cannot be used.
+func readBody(w http.ResponseWriter, r *http.Request) ([]byte, int, error) {
+	raw := http.MaxBytesReader(w, r.Body, maxV1Body)
+	defer r.Body.Close()
+	var src io.Reader = raw
+	switch enc := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Encoding"))); enc {
+	case "", "identity":
+	case "gzip", "x-gzip":
+		zr, err := gzip.NewReader(raw)
+		if err != nil {
+			return nil, http.StatusBadRequest, errors.New("cannot read a gzip body")
+		}
+		defer zr.Close()
+		src = zr
+	case "deflate":
+		zr, err := zlib.NewReader(raw)
+		if err != nil {
+			return nil, http.StatusBadRequest, errors.New("cannot read a deflate body")
+		}
+		defer zr.Close()
+		src = zr
+	default:
+		return nil, http.StatusUnsupportedMediaType, fmt.Errorf("Content-Encoding %q is not supported; send the body as plain JSON, gzip or deflate", enc)
+	}
+	// The limit applies to what the body becomes as well: a small compressed
+	// body can inflate to far more than it is.
+	body, err := io.ReadAll(io.LimitReader(src, maxV1Body+1))
+	if err == nil && int64(len(body)) > maxV1Body {
+		err = &http.MaxBytesError{Limit: maxV1Body}
+	}
+	if err != nil {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			return nil, http.StatusRequestEntityTooLarge, fmt.Errorf("the request is larger than %d MB", maxV1Body>>20)
+		}
+		return nil, http.StatusBadRequest, errors.New("cannot read body")
+	}
+	// What goes upstream is the decoded JSON, so the header that described the
+	// wire form must not follow it.
+	r.Header.Del("Content-Encoding")
+	return body, 0, nil
+}
+
+func writeJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(v)
+}
+
+// writeError replies with a JSON body that never names a credential; on /v1
+// in the caller's API envelope.
+func writeError(w http.ResponseWriter, status int, msg string) {
+	writeAPIError(w, status, "", "", msg)
+}
+
+func writeLegacyError(w http.ResponseWriter, status int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	b, _ := json.Marshal(map[string]string{"error": msg})
+	w.Write(b)
 }
