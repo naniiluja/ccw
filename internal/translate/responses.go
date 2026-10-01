@@ -58,23 +58,7 @@ func OpenAIToResponses(body []byte) ([]byte, error) {
 		out["instructions"] = DefaultInstructions
 	}
 	if tools := list(in["tools"]); len(tools) > 0 {
-		var ts []any
-		for _, t := range tools {
-			fn := asObj(asObj(t)["function"])
-			if fn == nil {
-				continue
-			}
-			params := fn["parameters"]
-			if params == nil {
-				params = obj{"type": "object", "properties": obj{}}
-			}
-			td := obj{"type": "function", "name": fn["name"], "parameters": params}
-			if d := str(fn["description"]); d != "" {
-				td["description"] = d
-			}
-			ts = append(ts, td)
-		}
-		out["tools"] = ts
+		out["tools"] = respTools(tools)
 	}
 	switch tc := in["tool_choice"].(type) {
 	case string:
@@ -96,6 +80,37 @@ func OpenAIToResponses(body []byte) ([]byte, error) {
 			out[k] = v
 		}
 	}
+	if text := respText(in); len(text) > 0 {
+		out["text"] = text
+	}
+	return json.Marshal(out)
+}
+
+// respTools converts Chat Completions function tools to Responses tools.
+// Tools of another kind are dropped.
+func respTools(tools []any) []any {
+	var ts []any
+	for _, t := range tools {
+		fn := asObj(asObj(t)["function"])
+		if fn == nil {
+			continue
+		}
+		params := fn["parameters"]
+		if params == nil {
+			params = obj{"type": "object", "properties": obj{}}
+		}
+		td := obj{"type": "function", "name": fn["name"], "parameters": params}
+		if d := str(fn["description"]); d != "" {
+			td["description"] = d
+		}
+		ts = append(ts, td)
+	}
+	return ts
+}
+
+// respText builds the Responses "text" options from the request's verbosity
+// and response_format. It is empty when the request set neither.
+func respText(in obj) obj {
 	text := obj{}
 	if v := str(in["verbosity"]); v != "" {
 		text["verbosity"] = v
@@ -115,10 +130,7 @@ func OpenAIToResponses(body []byte) ([]byte, error) {
 	case "json_object":
 		text["format"] = obj{"type": "json_object"}
 	}
-	if len(text) > 0 {
-		out["text"] = text
-	}
-	return json.Marshal(out)
+	return text
 }
 
 // contentText returns the text of OpenAI message content.

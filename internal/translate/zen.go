@@ -378,112 +378,13 @@ func zenUsage(raw obj) obj {
 // finish reason, usage). Choices are folded by index. A stream that ended in an
 // error, or carried no answer, comes back as an error body.
 func CollectZenStream(src io.Reader) []byte {
-	type choice struct {
-		text      strings.Builder
-		reasoning strings.Builder
-		kept      map[string][]obj
-		tools     map[int64]*obj
-		finish    string
-		gotText   bool
-	}
-	choices := map[int64]*choice{}
-	var id, model string
-	var created int64
-	var usage obj
-	var failure obj
-	err := sseEvents(src, func(_, data string) bool {
-		if strings.TrimSpace(data) == "[DONE]" {
-			return false
-		}
-		ch, err := decode([]byte(data))
-		if err != nil {
-			return true
-		}
-		if e := asObj(ch["error"]); e != nil {
-			failure = e
-			return false
-		}
-		if id == "" {
-			id = str(ch["id"])
-		}
-		if model == "" {
-			model = str(ch["model"])
-		}
-		if created == 0 {
-			created = num(ch["created"])
-		}
-		if u := asObj(ch["usage"]); u != nil {
-			usage = u
-		}
-		for _, c := range list(ch["choices"]) {
-			cm := asObj(c)
-			idx := num(cm["index"])
-			cc := choices[idx]
-			if cc == nil {
-				cc = &choice{kept: map[string][]obj{}, tools: map[int64]*obj{}}
-				choices[idx] = cc
-			}
-			d := asObj(cm["delta"])
-			if s, ok := d["content"].(string); ok {
-				cc.text.WriteString(s)
-				cc.gotText = true
-			}
-			if s, ok := d[zenThinkingOut[0]].(string); ok {
-				cc.reasoning.WriteString(s)
-			}
-			for _, k := range zenKeep {
-				for _, item := range list(d[k]) {
-					it := asObj(item)
-					if it == nil {
-						continue
-					}
-					// Fragments repeat the shape of their item on every chunk,
-					// so items are stitched under their own index.
-					at, hasAt := it["index"]
-					stitched := false
-					if hasAt {
-						for _, prev := range cc.kept[k] {
-							if prev["index"] == at {
-								if t, ok := it["text"].(string); ok {
-									prev["text"] = str(prev["text"]) + t
-								}
-								stitched = true
-								break
-							}
-						}
-					}
-					if !stitched {
-						cc.kept[k] = append(cc.kept[k], it)
-					}
-				}
-			}
-			for _, raw := range list(d["tool_calls"]) {
-				tc := asObj(raw)
-				at := num(tc["index"])
-				slot := cc.tools[at]
-				if slot == nil {
-					slot = &obj{"id": "", "type": "function", "function": obj{"name": "", "arguments": ""}}
-					cc.tools[at] = slot
-				}
-				if s := str(tc["id"]); s != "" {
-					(*slot)["id"] = s
-				}
-				fn := asObj(tc["function"])
-				sf := asObj((*slot)["function"])
-				sf["name"] = str(sf["name"]) + str(fn["name"])
-				sf["arguments"] = str(sf["arguments"]) + str(fn["arguments"])
-			}
-			if f := str(cm["finish_reason"]); f != "" {
-				cc.finish = f
-			}
-		}
-		return true
-	})
-	if failure != nil {
-		b, _ := json.Marshal(obj{"error": failure})
+	z := &zenCollector{choices: map[int64]*zenChoice{}}
+	err := sseEvents(src, z.event)
+	if z.failure != nil {
+		b, _ := json.Marshal(obj{"error": z.failure})
 		return b
 	}
-	if len(choices) == 0 {
+	if len(z.choices) == 0 {
 		msg := "the stream carried no answer"
 		if err != nil {
 			msg += ": " + err.Error()
@@ -492,52 +393,176 @@ func CollectZenStream(src io.Reader) []byte {
 		return b
 	}
 	var outChoices []any
-	for idx := int64(0); len(outChoices) < len(choices) && idx < 1<<16; idx++ {
-		cc := choices[idx]
-		if cc == nil {
-			continue
+	for idx := int64(0); len(outChoices) < len(z.choices) && idx < 1<<16; idx++ {
+		if cc := z.choices[idx]; cc != nil {
+			outChoices = append(outChoices, cc.result(idx))
 		}
-		msg := obj{"role": "assistant", "content": cc.text.String(), "refusal": nil}
-		if cc.reasoning.Len() > 0 {
-			for _, k := range zenThinkingOut {
-				msg[k] = cc.reasoning.String()
-			}
-		}
-		for k, items := range cc.kept {
-			if len(items) > 0 {
-				msg[k] = items
-			}
-		}
-		if len(cc.tools) > 0 {
-			var calls []any
-			for i := int64(0); i <= 1<<16 && len(calls) < len(cc.tools); i++ {
-				if t := cc.tools[i]; t != nil {
-					calls = append(calls, *t)
-				}
-			}
-			msg["tool_calls"] = calls
-			if cc.text.Len() == 0 {
-				msg["content"] = nil
-			}
-		}
-		var finish any
-		if cc.finish != "" {
-			finish = cc.finish
-		}
-		outChoices = append(outChoices, obj{"index": idx, "message": msg, "finish_reason": finish, "logprobs": nil})
 	}
+	id, created := z.id, z.created
 	if id == "" {
 		id = newID(zenIDPrefix)
 	}
 	if created == 0 {
 		created = time.Now().Unix()
 	}
-	out := obj{"id": id, "object": "chat.completion", "created": created, "model": model, "choices": outChoices}
-	if usage != nil {
-		out["usage"] = usage
+	out := obj{"id": id, "object": "chat.completion", "created": created, "model": z.model, "choices": outChoices}
+	if z.usage != nil {
+		out["usage"] = z.usage
 	}
 	b, _ := json.Marshal(out)
 	return b
+}
+
+// zenCollector is the state CollectZenStream folds the chunks into.
+type zenCollector struct {
+	choices   map[int64]*zenChoice
+	id, model string
+	created   int64
+	usage     obj
+	failure   obj
+}
+
+// zenChoice is one choice of a collected Zen answer.
+type zenChoice struct {
+	text      strings.Builder
+	reasoning strings.Builder
+	kept      map[string][]obj
+	tools     map[int64]*obj
+	finish    string
+	gotText   bool
+}
+
+// event folds one SSE data payload. It returns false at [DONE] and at an
+// error, which ends the answer.
+func (z *zenCollector) event(_, data string) bool {
+	if strings.TrimSpace(data) == "[DONE]" {
+		return false
+	}
+	ch, err := decode([]byte(data))
+	if err != nil {
+		return true
+	}
+	if e := asObj(ch["error"]); e != nil {
+		z.failure = e
+		return false
+	}
+	if z.id == "" {
+		z.id = str(ch["id"])
+	}
+	if z.model == "" {
+		z.model = str(ch["model"])
+	}
+	if z.created == 0 {
+		z.created = num(ch["created"])
+	}
+	if u := asObj(ch["usage"]); u != nil {
+		z.usage = u
+	}
+	for _, c := range list(ch["choices"]) {
+		cm := asObj(c)
+		z.choice(num(cm["index"])).fold(cm)
+	}
+	return true
+}
+
+// choice returns the choice at idx, creating it on first use.
+func (z *zenCollector) choice(idx int64) *zenChoice {
+	cc := z.choices[idx]
+	if cc == nil {
+		cc = &zenChoice{kept: map[string][]obj{}, tools: map[int64]*obj{}}
+		z.choices[idx] = cc
+	}
+	return cc
+}
+
+// fold adds one chunk's choice to the collected choice.
+func (cc *zenChoice) fold(cm obj) {
+	d := asObj(cm["delta"])
+	if s, ok := d["content"].(string); ok {
+		cc.text.WriteString(s)
+		cc.gotText = true
+	}
+	if s, ok := d[zenThinkingOut[0]].(string); ok {
+		cc.reasoning.WriteString(s)
+	}
+	for _, k := range zenKeep {
+		for _, item := range list(d[k]) {
+			if it := asObj(item); it != nil {
+				cc.keep(k, it)
+			}
+		}
+	}
+	for _, raw := range list(d["tool_calls"]) {
+		cc.toolFragment(asObj(raw))
+	}
+	if f := str(cm["finish_reason"]); f != "" {
+		cc.finish = f
+	}
+}
+
+// keep adds an item of the kept field k. Fragments repeat the shape of their
+// item on every chunk, so items are stitched under their own index.
+func (cc *zenChoice) keep(k string, it obj) {
+	if at, hasAt := it["index"]; hasAt {
+		for _, prev := range cc.kept[k] {
+			if prev["index"] == at {
+				if t, ok := it["text"].(string); ok {
+					prev["text"] = str(prev["text"]) + t
+				}
+				return
+			}
+		}
+	}
+	cc.kept[k] = append(cc.kept[k], it)
+}
+
+// toolFragment adds one tool call fragment to the call at its index.
+func (cc *zenChoice) toolFragment(tc obj) {
+	at := num(tc["index"])
+	slot := cc.tools[at]
+	if slot == nil {
+		slot = &obj{"id": "", "type": "function", "function": obj{"name": "", "arguments": ""}}
+		cc.tools[at] = slot
+	}
+	if s := str(tc["id"]); s != "" {
+		(*slot)["id"] = s
+	}
+	fn := asObj(tc["function"])
+	sf := asObj((*slot)["function"])
+	sf["name"] = str(sf["name"]) + str(fn["name"])
+	sf["arguments"] = str(sf["arguments"]) + str(fn["arguments"])
+}
+
+// result is the collected choice as a chat.completion choice at idx.
+func (cc *zenChoice) result(idx int64) obj {
+	msg := obj{"role": "assistant", "content": cc.text.String(), "refusal": nil}
+	if cc.reasoning.Len() > 0 {
+		for _, k := range zenThinkingOut {
+			msg[k] = cc.reasoning.String()
+		}
+	}
+	for k, items := range cc.kept {
+		if len(items) > 0 {
+			msg[k] = items
+		}
+	}
+	if len(cc.tools) > 0 {
+		var calls []any
+		for i := int64(0); i <= 1<<16 && len(calls) < len(cc.tools); i++ {
+			if t := cc.tools[i]; t != nil {
+				calls = append(calls, *t)
+			}
+		}
+		msg["tool_calls"] = calls
+		if cc.text.Len() == 0 {
+			msg["content"] = nil
+		}
+	}
+	var finish any
+	if cc.finish != "" {
+		finish = cc.finish
+	}
+	return obj{"index": idx, "message": msg, "finish_reason": finish, "logprobs": nil}
 }
 
 // ZenStatus reads the free tier's refusal of an unknown model. The upstream

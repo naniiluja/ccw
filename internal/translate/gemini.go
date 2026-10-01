@@ -464,99 +464,8 @@ var geminiFinish = map[string]string{
 // and writes Chat Completions chunks. Thought signatures of function calls are
 // recorded so the next turn can send them back.
 func GeminiStreamToOpenAI(dst Flusher, src io.Reader, sigs Signatures) {
-	id, model := newID("chatcmpl-"), ""
-	created := time.Now().Unix()
-	started := false
-	calls := 0
-	finish := ""
-	pendingSig := ""
-	var usage obj
-	emit := func(delta obj, fin any, extra obj) {
-		ch := obj{"index": 0, "delta": delta, "finish_reason": fin}
-		c := obj{"id": id, "object": "chat.completion.chunk", "created": created, "model": model, "choices": []any{ch}}
-		for k, v := range extra {
-			c[k] = v
-		}
-		b, _ := json.Marshal(c)
-		io.WriteString(dst, "data: "+string(b)+"\n\n")
-		dst.Flush()
-	}
-	streamErr := sseEvents(src, func(_, data string) bool {
-		ev, err := decode([]byte(data))
-		if err != nil {
-			return true
-		}
-		if e := asObj(ev["error"]); e != nil {
-			b, _ := json.Marshal(obj{"error": obj{"message": str(e["message"]), "type": str(e["status"])}})
-			io.WriteString(dst, "data: "+string(b)+"\n\n")
-			dst.Flush()
-			return false
-		}
-		r := asObj(ev["response"])
-		if r == nil {
-			r = ev
-		}
-		if !started {
-			started = true
-			if s := str(r["responseId"]); s != "" {
-				id = "chatcmpl-" + s
-			}
-			model = str(r["modelVersion"])
-			emit(obj{"role": "assistant", "content": ""}, nil, nil)
-		}
-		if u := asObj(r["usageMetadata"]); u != nil {
-			usage = u
-		}
-		cand := asObj(firstOf(r["candidates"]))
-		for _, p := range list(asObj(cand["content"])["parts"]) {
-			part := asObj(p)
-			sig := str(part["thoughtSignature"])
-			switch {
-			case part["functionCall"] != nil:
-				fc := asObj(part["functionCall"])
-				cid := str(fc["id"])
-				if cid == "" {
-					cid = "call_" + newID("")
-				}
-				if sig == "" {
-					sig = pendingSig
-				}
-				if sig != "" && sigs != nil {
-					sigs.Put(cid, sig)
-				}
-				pendingSig = ""
-				args, _ := json.Marshal(fc["args"])
-				emit(obj{"tool_calls": []any{obj{"index": calls, "id": cid, "type": "function",
-					"function": obj{"name": fc["name"], "arguments": string(args)}}}}, nil, nil)
-				calls++
-			case part["thought"] == true:
-				if t := str(part["text"]); t != "" {
-					emit(obj{"reasoning_content": t}, nil, nil)
-				}
-				if sig != "" {
-					pendingSig = sig
-				}
-			case part["text"] != nil:
-				if t := str(part["text"]); t != "" {
-					emit(obj{"content": t}, nil, nil)
-				}
-				if sig != "" {
-					pendingSig = sig
-				}
-			default:
-				if sig != "" {
-					pendingSig = sig
-				}
-			}
-		}
-		if f := str(cand["finishReason"]); f != "" {
-			finish = geminiFinish[f]
-			if finish == "" {
-				finish = "stop"
-			}
-		}
-		return true
-	})
+	g := &geminiStream{dst: dst, sigs: sigs, id: newID("chatcmpl-"), created: time.Now().Unix()}
+	streamErr := sseEvents(src, g.event)
 	if streamErr != nil {
 		// A truncated stream must not close as a clean answer.
 		b, _ := json.Marshal(obj{"error": obj{"message": "upstream stream ended early: " + streamErr.Error(), "type": "api_error"}})
@@ -564,33 +473,148 @@ func GeminiStreamToOpenAI(dst Flusher, src io.Reader, sigs Signatures) {
 		dst.Flush()
 		return
 	}
-	if !started {
-		emit(obj{"role": "assistant", "content": ""}, nil, nil)
+	if !g.started {
+		g.emit(obj{"role": "assistant", "content": ""}, nil, nil)
 	}
-	if finish == "" || (finish == "stop" && calls > 0) {
-		if calls > 0 {
+	finish := g.finish
+	if finish == "" || (finish == "stop" && g.calls > 0) {
+		if g.calls > 0 {
 			finish = "tool_calls"
 		} else {
 			finish = "stop"
 		}
 	}
 	var extra obj
-	if usage != nil {
-		in := num(usage["promptTokenCount"])
-		thoughts := num(usage["thoughtsTokenCount"])
-		out := num(usage["candidatesTokenCount"]) + thoughts
-		us := obj{"prompt_tokens": in, "completion_tokens": out, "total_tokens": in + out}
-		if c := num(usage["cachedContentTokenCount"]); c > 0 {
-			us["prompt_tokens_details"] = obj{"cached_tokens": c}
-		}
-		if thoughts > 0 {
-			us["completion_tokens_details"] = obj{"reasoning_tokens": thoughts}
-		}
-		extra = obj{"usage": us}
+	if g.usage != nil {
+		extra = obj{"usage": geminiUsage(g.usage)}
 	}
-	emit(obj{}, finish, extra)
+	g.emit(obj{}, finish, extra)
 	io.WriteString(dst, "data: [DONE]\n\n")
 	dst.Flush()
+}
+
+// geminiStream is the state of one GeminiStreamToOpenAI run.
+type geminiStream struct {
+	dst        Flusher
+	sigs       Signatures
+	id, model  string
+	created    int64
+	started    bool
+	calls      int
+	finish     string
+	pendingSig string
+	usage      obj
+}
+
+// emit writes one Chat Completions chunk and flushes it.
+func (g *geminiStream) emit(delta obj, fin any, extra obj) {
+	ch := obj{"index": 0, "delta": delta, "finish_reason": fin}
+	c := obj{"id": g.id, "object": "chat.completion.chunk", "created": g.created, "model": g.model, "choices": []any{ch}}
+	for k, v := range extra {
+		c[k] = v
+	}
+	b, _ := json.Marshal(c)
+	io.WriteString(g.dst, "data: "+string(b)+"\n\n")
+	g.dst.Flush()
+}
+
+// event handles one SSE data payload. It returns false at an upstream error,
+// which it relays.
+func (g *geminiStream) event(_, data string) bool {
+	ev, err := decode([]byte(data))
+	if err != nil {
+		return true
+	}
+	if e := asObj(ev["error"]); e != nil {
+		b, _ := json.Marshal(obj{"error": obj{"message": str(e["message"]), "type": str(e["status"])}})
+		io.WriteString(g.dst, "data: "+string(b)+"\n\n")
+		g.dst.Flush()
+		return false
+	}
+	r := asObj(ev["response"])
+	if r == nil {
+		r = ev
+	}
+	if !g.started {
+		g.started = true
+		if s := str(r["responseId"]); s != "" {
+			g.id = "chatcmpl-" + s
+		}
+		g.model = str(r["modelVersion"])
+		g.emit(obj{"role": "assistant", "content": ""}, nil, nil)
+	}
+	if u := asObj(r["usageMetadata"]); u != nil {
+		g.usage = u
+	}
+	cand := asObj(firstOf(r["candidates"]))
+	for _, p := range list(asObj(cand["content"])["parts"]) {
+		g.part(asObj(p))
+	}
+	if f := str(cand["finishReason"]); f != "" {
+		g.finish = geminiFinish[f]
+		if g.finish == "" {
+			g.finish = "stop"
+		}
+	}
+	return true
+}
+
+// part writes one candidate part. A signature on a part that is not a
+// function call waits for the next call.
+func (g *geminiStream) part(part obj) {
+	sig := str(part["thoughtSignature"])
+	switch {
+	case part["functionCall"] != nil:
+		g.functionCall(asObj(part["functionCall"]), sig)
+		return
+	case part["thought"] == true:
+		if t := str(part["text"]); t != "" {
+			g.emit(obj{"reasoning_content": t}, nil, nil)
+		}
+	case part["text"] != nil:
+		if t := str(part["text"]); t != "" {
+			g.emit(obj{"content": t}, nil, nil)
+		}
+	}
+	if sig != "" {
+		g.pendingSig = sig
+	}
+}
+
+// functionCall writes one function call as a tool call and records its
+// signature, or the pending one when it carries none.
+func (g *geminiStream) functionCall(fc obj, sig string) {
+	cid := str(fc["id"])
+	if cid == "" {
+		cid = "call_" + newID("")
+	}
+	if sig == "" {
+		sig = g.pendingSig
+	}
+	if sig != "" && g.sigs != nil {
+		g.sigs.Put(cid, sig)
+	}
+	g.pendingSig = ""
+	args, _ := json.Marshal(fc["args"])
+	g.emit(obj{"tool_calls": []any{obj{"index": g.calls, "id": cid, "type": "function",
+		"function": obj{"name": fc["name"], "arguments": string(args)}}}}, nil, nil)
+	g.calls++
+}
+
+// geminiUsage converts Gemini usage metadata to Chat Completions usage.
+// Thought tokens count as completion tokens.
+func geminiUsage(usage obj) obj {
+	in := num(usage["promptTokenCount"])
+	thoughts := num(usage["thoughtsTokenCount"])
+	out := num(usage["candidatesTokenCount"]) + thoughts
+	us := obj{"prompt_tokens": in, "completion_tokens": out, "total_tokens": in + out}
+	if c := num(usage["cachedContentTokenCount"]); c > 0 {
+		us["prompt_tokens_details"] = obj{"cached_tokens": c}
+	}
+	if thoughts > 0 {
+		us["completion_tokens_details"] = obj{"reasoning_tokens": thoughts}
+	}
+	return us
 }
 
 // claudeThinkingBudget maps a reasoning effort to the token budget Claude takes
