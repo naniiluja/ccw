@@ -20,6 +20,7 @@ Xóa hai hàm chết thật và sửa các cảnh báo công cụ đã đo.
 - `staticcheck` trước và sau; test cũ giữ nguyên.
 
 ## Files to touch
+- internal/drift/shape.go — xóa `IDLike`, thành code chết sau task 014 (gate deadcode buộc)
 - internal/provider/registry.go
 - internal/zen/profiles.go
 - internal/httpapi/websearch_test.go
