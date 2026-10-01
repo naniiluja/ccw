@@ -2,7 +2,6 @@ package store
 
 import (
 	"fmt"
-	"strings"
 	"time"
 )
 
@@ -63,34 +62,6 @@ type Verdict struct {
 	Note     string
 	Ack      bool
 	Resolved bool
-}
-
-// migrateDrift adds the columns newer than the table.
-func (s *Store) migrateDrift() error {
-	for _, col := range []string{"client TEXT NOT NULL DEFAULT ''", "client_key_id TEXT NOT NULL DEFAULT ''", "verdict TEXT NOT NULL DEFAULT ''",
-		"verdict_conf REAL NOT NULL DEFAULT 0", "verdict_at TEXT NOT NULL DEFAULT ''", "auto_acked INTEGER NOT NULL DEFAULT 0",
-		"verdict_by TEXT NOT NULL DEFAULT ''", "verdict_note TEXT NOT NULL DEFAULT ''", "resolved INTEGER NOT NULL DEFAULT 0"} {
-		if _, err := s.DB.Exec("ALTER TABLE shape_changes ADD COLUMN " + col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
-			return fmt.Errorf("migrate shape_changes: %w", err)
-		}
-	}
-	return s.migrateShapeFields()
-}
-
-// migrateShapeFields adds the legacy column. The ALTER succeeds exactly once,
-// on a database the old code wrote, so that is where the already learned "{*}"
-// paths are marked. A later start finds the column and does nothing.
-func (s *Store) migrateShapeFields() error {
-	if _, err := s.DB.Exec("ALTER TABLE shape_fields ADD COLUMN legacy INTEGER NOT NULL DEFAULT 0"); err != nil {
-		if strings.Contains(err.Error(), "duplicate column") {
-			return nil
-		}
-		return fmt.Errorf("migrate shape_fields: %w", err)
-	}
-	if _, err := s.DB.Exec("UPDATE shape_fields SET legacy = 1 WHERE path LIKE '%{*}%'"); err != nil {
-		return fmt.Errorf("mark learned shape fields: %w", err)
-	}
-	return nil
 }
 
 // UnreviewedShapeChanges returns the changes no reviewer has judged yet and

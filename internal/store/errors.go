@@ -60,16 +60,6 @@ CREATE TABLE IF NOT EXISTS upstream_error_bodies (
 	PRIMARY KEY (provider, signature)
 );`
 
-// migrateErrors adds the columns a database written by an older version has
-// not got. A second run is a no-op.
-func (s *Store) migrateErrors() error {
-	if _, err := s.DB.Exec(`ALTER TABLE upstream_errors ADD COLUMN client_key_id TEXT NOT NULL DEFAULT ''`); err != nil &&
-		!strings.Contains(err.Error(), "duplicate column") {
-		return fmt.Errorf("add column client_key_id: %w", err)
-	}
-	return nil
-}
-
 // AddUpstreamError stores an error and returns its id.
 func (s *Store) AddUpstreamError(e UpstreamError) (int64, error) {
 	if e.At == "" {
@@ -239,15 +229,6 @@ CREATE TABLE IF NOT EXISTS error_verdicts (
 	last_error TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS error_verdicts_group ON error_verdicts (provider, signature, id);`
-
-// migrateVerdicts adds the columns an older database has not got.
-func (s *Store) migrateVerdicts() error {
-	if _, err := s.DB.Exec(`ALTER TABLE error_verdicts ADD COLUMN replayed INTEGER NOT NULL DEFAULT 0`); err != nil &&
-		!strings.Contains(err.Error(), "duplicate column") {
-		return fmt.Errorf("add column replayed: %w", err)
-	}
-	return nil
-}
 
 // AddErrorVerdict records a verdict.
 func (s *Store) AddErrorVerdict(v ErrorVerdict) (ErrorVerdict, error) {
