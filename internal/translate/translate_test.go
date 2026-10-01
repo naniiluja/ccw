@@ -1,0 +1,551 @@
+package translate
+
+import (
+	"bytes"
+	"encoding/json"
+	"strconv"
+	"strings"
+	"testing"
+
+	"github.com/naniiluja/ccw/internal/filter"
+)
+
+func mustJSON(t *testing.T, b []byte) map[string]any {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("bad json %s: %v", b, err)
+	}
+	return m
+}
+
+func j(v any) string { b, _ := json.Marshal(v); return string(b) }
+
+func TestOpenAIToAnthropicRequest(t *testing.T) {
+	in := `{"model":"m","max_completion_tokens":100,"temperature":0.2,"stop":"END","stream":true,
+	 "messages":[
+	  {"role":"system","content":"be brief"},
+	  {"role":"user","content":[{"type":"text","text":"look"},{"type":"image_url","image_url":{"url":"data:image/png;base64,QUJD"}}]},
+	  {"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{\"x\":1}"}}]},
+	  {"role":"tool","tool_call_id":"c1","content":"42"},
+	  {"role":"user","content":"thanks"}],
+	 "tools":[{"type":"function","function":{"name":"f","description":"d","parameters":{"type":"object"}}}],
+	 "tool_choice":"required","parallel_tool_calls":false}`
+	out, err := OpenAIToAnthropic([]byte(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := mustJSON(t, out)
+	checks := map[string]string{
+		"system":         `[{"text":"be brief","type":"text"}]`,
+		"max_tokens":     `100`,
+		"stop_sequences": `["END"]`,
+		"stream":         `true`,
+		"tools":          `[{"description":"d","input_schema":{"type":"object"},"name":"f"}]`,
+		"tool_choice":    `{"disable_parallel_tool_use":true,"type":"any"}`,
+	}
+	for k, want := range checks {
+		if got := j(m[k]); got != want {
+			t.Errorf("%s = %s, want %s", k, got, want)
+		}
+	}
+	msgs := m["messages"].([]any)
+	// user, assistant(tool_use), user(tool_result + "thanks" merged)
+	if len(msgs) != 3 {
+		t.Fatalf("messages = %s", j(msgs))
+	}
+	if got := j(msgs[0].(map[string]any)["content"]); !strings.Contains(got, `"media_type":"image/png"`) {
+		t.Errorf("image not converted: %s", got)
+	}
+	if got := j(msgs[1]); !strings.Contains(got, `"input":{"x":1}`) || !strings.Contains(got, `"tool_use"`) {
+		t.Errorf("tool call not converted: %s", got)
+	}
+	if got := j(msgs[2]); !strings.Contains(got, `"tool_result"`) || !strings.Contains(got, `"thanks"`) {
+		t.Errorf("tool result and follow-up not merged: %s", got)
+	}
+}
+
+func TestAnthropicToOpenAIRequest(t *testing.T) {
+	in := `{"model":"m","max_tokens":50,"system":[{"type":"text","text":"sys"}],"stream":true,"stop_sequences":["X"],
+	 "messages":[
+	  {"role":"user","content":"hi"},
+	  {"role":"assistant","content":[{"type":"text","text":"calling"},{"type":"tool_use","id":"t1","name":"f","input":{"a":"b"}}]},
+	  {"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"ok"}]},{"type":"text","text":"next"}]}],
+	 "tools":[{"name":"f","input_schema":{"type":"object"}},{"type":"web_search_20250305","name":"web_search"}],
+	 "tool_choice":{"type":"tool","name":"f"}}`
+	out, err := AnthropicToOpenAI([]byte(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := mustJSON(t, out)
+	msgs := m["messages"].([]any)
+	roles := []string{}
+	for _, x := range msgs {
+		roles = append(roles, x.(map[string]any)["role"].(string))
+	}
+	if strings.Join(roles, ",") != "system,user,assistant,tool,user" {
+		t.Fatalf("roles = %v; messages = %s", roles, j(msgs))
+	}
+	if got := j(msgs[2]); !strings.Contains(got, `"arguments":"{\"a\":\"b\"}"`) {
+		t.Errorf("tool_use not converted: %s", got)
+	}
+	if got := j(msgs[3]); !strings.Contains(got, `"content":"ok"`) || !strings.Contains(got, `"tool_call_id":"t1"`) {
+		t.Errorf("tool_result not converted: %s", got)
+	}
+	if j(m["stream_options"]) != `{"include_usage":true}` || j(m["stop"]) != `["X"]` {
+		t.Errorf("stream_options=%s stop=%s", j(m["stream_options"]), j(m["stop"]))
+	}
+	if got := j(m["tools"]); strings.Contains(got, "web_search") {
+		t.Errorf("server tool leaked into OpenAI tools: %s", got)
+	}
+	if j(m["tool_choice"]) != `{"function":{"name":"f"},"type":"function"}` {
+		t.Errorf("tool_choice = %s", j(m["tool_choice"]))
+	}
+}
+
+func TestResponsesBothWays(t *testing.T) {
+	ant := `{"id":"msg_1","type":"message","model":"claude","content":[{"type":"text","text":"hi"},{"type":"tool_use","id":"t","name":"f","input":{"q":1}}],"stop_reason":"tool_use","usage":{"input_tokens":10,"cache_read_input_tokens":5,"output_tokens":3}}`
+	oa, err := AnthropicResponseToOpenAI([]byte(ant))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := mustJSON(t, oa)
+	ch := m["choices"].([]any)[0].(map[string]any)
+	if ch["finish_reason"] != "tool_calls" || j(m["usage"]) != `{"completion_tokens":3,"prompt_tokens":15,"prompt_tokens_details":{"cached_tokens":5},"total_tokens":18}` {
+		t.Errorf("openai = %s", oa)
+	}
+	back, err := OpenAIResponseToAnthropic(oa, Reply{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := mustJSON(t, back)
+	if b["stop_reason"] != "tool_use" || !strings.Contains(j(b["content"]), `"input":{"q":1}`) ||
+		j(b["usage"]) != `{"cache_read_input_tokens":5,"input_tokens":10,"output_tokens":3}` {
+		t.Errorf("anthropic = %s", back)
+	}
+}
+
+type buf struct{ bytes.Buffer }
+
+func (b *buf) Flush() error { return nil }
+
+func TestAnthropicStreamToOpenAI(t *testing.T) {
+	src := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"claude\",\"usage\":{\"input_tokens\":7}}}\n\n" +
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hel\"}}\n\n" +
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"t\",\"name\":\"f\"}}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"a\\\":\"}}\n\n" +
+		"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":4}}\n\n" +
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	var out buf
+	AnthropicStreamToOpenAI(&out, strings.NewReader(src))
+	s := out.String()
+	for _, want := range []string{`"role":"assistant"`, `"content":"Hel"`, `"name":"f"`, `"arguments":"{\"a\":"`,
+		`"finish_reason":"tool_calls"`, `"prompt_tokens":7`, `"completion_tokens":4`, "data: [DONE]"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("stream missing %s:\n%s", want, s)
+		}
+	}
+}
+
+func TestOpenAIStreamToAnthropic(t *testing.T) {
+	src := `data: {"id":"chatcmpl-1","model":"llama","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}` + "\n\n" +
+		`data: {"id":"chatcmpl-1","model":"llama","choices":[{"index":0,"delta":{"content":"Hi"}}]}` + "\n\n" +
+		`data: {"id":"chatcmpl-1","model":"llama","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c","function":{"name":"f","arguments":"{}"}}]}}]}` + "\n\n" +
+		`data: {"id":"chatcmpl-1","model":"llama","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}` + "\n\n" +
+		`data: {"id":"chatcmpl-1","choices":[],"usage":{"prompt_tokens":9,"completion_tokens":2}}` + "\n\n" +
+		"data: [DONE]\n\n"
+	var out buf
+	OpenAIStreamToAnthropic(&out, strings.NewReader(src), Reply{})
+	s := out.String()
+	order := []string{"event: message_start", `"text":"Hi","type":"text_delta"`, "event: content_block_stop",
+		`"type":"tool_use"`, `"partial_json":"{}"`, `"stop_reason":"tool_use"`, `"input_tokens":9`, "event: message_stop"}
+	pos := 0
+	for _, want := range order {
+		i := strings.Index(s[pos:], want)
+		if i < 0 {
+			t.Fatalf("stream missing %s after byte %d:\n%s", want, pos, s)
+		}
+		pos += i
+	}
+}
+
+func TestErrorShapes(t *testing.T) {
+	if got := string(Error(429, []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"slow"}}`), OpenAI)); got != `{"error":{"code":null,"message":"slow","param":null,"type":"rate_limit_error"}}` {
+		t.Errorf("to openai = %s", got)
+	}
+	if got := string(Error(400, []byte(`{"error":{"message":"bad","type":"invalid_request_error"}}`), Anthropic)); got != `{"error":{"message":"bad","type":"invalid_request_error"},"type":"error"}` {
+		t.Errorf("to anthropic = %s", got)
+	}
+}
+
+func TestCollectOpenAIStream(t *testing.T) {
+	src := `data: {"id":"c1","model":"m","choices":[{"index":0,"delta":{"content":"Hel"}}]}` + "\n\n" +
+		`data: {"id":"c1","choices":[{"index":0,"delta":{"content":"lo","tool_calls":[{"index":0,"id":"t","function":{"name":"f","arguments":"{\"a\""}}]}}]}` + "\n\n" +
+		`data: {"id":"c1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":":1}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":2,"completion_tokens":3}}` + "\n\n" +
+		"data: [DONE]\n\n"
+	m := mustJSON(t, CollectOpenAIStream(strings.NewReader(src)))
+	msg := m["choices"].([]any)[0].(map[string]any)["message"].(map[string]any)
+	if msg["content"] != "Hello" || !strings.Contains(j(msg["tool_calls"]), `"arguments":"{\"a\":1}"`) || j(m["usage"]) != `{"completion_tokens":3,"prompt_tokens":2}` {
+		t.Errorf("collected = %s", j(m))
+	}
+}
+
+func TestOpenAIToResponsesAndBack(t *testing.T) {
+	in := `{"model":"gpt-5","reasoning_effort":"low","messages":[{"role":"system","content":"sys"},{"role":"user","content":"hi"},
+	 {"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]},
+	 {"role":"tool","tool_call_id":"c1","content":"ok"}],"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object"}}}]}`
+	out, err := OpenAIToResponses([]byte(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := mustJSON(t, out)
+	if m["instructions"] != "sys" || m["stream"] != true || m["store"] != false || j(m["reasoning"]) != `{"effort":"low","summary":"auto"}` {
+		t.Errorf("responses req = %s", out)
+	}
+	if s := j(m["input"]); !strings.Contains(s, `"function_call"`) || !strings.Contains(s, `"function_call_output"`) || !strings.Contains(s, `"input_text"`) {
+		t.Errorf("input = %s", s)
+	}
+	src := "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-5\"}}\n\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hi\"}\n\n" +
+		"data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"c2\",\"name\":\"f\"}}\n\n" +
+		"data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"delta\":\"{}\"}\n\n" +
+		"data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":5,\"output_tokens\":2,\"input_tokens_details\":{\"cached_tokens\":1}}}}\n\n"
+	var o buf
+	ResponsesStreamToOpenAI(&o, strings.NewReader(src))
+	s := o.String()
+	for _, want := range []string{`"content":"Hi"`, `"id":"c2"`, `"arguments":"{}"`, `"finish_reason":"tool_calls"`, `"prompt_tokens":5`, `"cached_tokens":1`, "[DONE]"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("chunks missing %s:\n%s", want, s)
+		}
+	}
+}
+
+type memSigs map[string]string
+
+func (m memSigs) Get(id string) string { return m[id] }
+func (m memSigs) Put(id, s string)     { m[id] = s }
+
+func TestOpenAIToGemini(t *testing.T) {
+	sigs := memSigs{"c1": "SIG1"}
+	in := `{"model":"gemini-3-flash","max_tokens":100000,"reasoning_effort":"low","messages":[{"role":"system","content":"sys"},
+	 {"role":"user","content":[{"type":"text","text":"look"},{"type":"image_url","image_url":{"url":"data:image/png;base64,QUJD"}}]},
+	 {"role":"assistant","content":"calling","tool_calls":[{"id":"c1","type":"function","function":{"name":"get weather","arguments":"{\"city\":\"HN\"}"}},{"id":"c9","type":"function","function":{"name":"f2","arguments":"{}"}}]},
+	 {"role":"tool","tool_call_id":"c1","content":"{\"t\":30}"},{"role":"tool","tool_call_id":"c9","content":"done"}],
+	 "tools":[{"type":"function","function":{"name":"get weather","parameters":{"type":"object","$schema":"x","additionalProperties":false,
+	   "properties":{"city":{"type":["string","null"],"minLength":1},"unit":{"anyOf":[{"type":"null"},{"type":"string","enum":["c","f"]}]},"n":{"const":3}},"required":["city","gone"]}}}]}`
+	out, err := OpenAIToGemini([]byte(in), sigs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	for _, want := range []string{`"systemInstruction":{"parts":[{"text":"sys"}],"role":"user"}`, `"inlineData":{"data":"QUJD","mimeType":"image/png"}`,
+		`"thoughtSignature":"SIG1"`, `"functionResponse":{"id":"c1","name":"get_weather","response":{"result":{"t":30}}}`,
+		`"maxOutputTokens":64000`, `"thinkingLevel":"low"`, `"name":"get_weather"`, `"city":{"type":"string"}`,
+		`"unit":{"enum":["c","f"],"type":"string"}`, `"n":{"enum":["3"],"type":"string"}`, `"required":["city"]`, `"mode":"VALIDATED"`} {
+		if !strings.Contains(s, want) {
+			t.Errorf("gemini request missing %s:\n%s", want, s)
+		}
+	}
+	if strings.Contains(s, "$schema") || strings.Contains(s, "additionalProperties") || strings.Contains(s, "minLength") {
+		t.Errorf("unsupported schema keys left: %s", s)
+	}
+	// The second call of the turn has no cached signature and gets none.
+	if strings.Count(s, "thoughtSignature") != 1 {
+		t.Errorf("signatures = %d, want 1", strings.Count(s, "thoughtSignature"))
+	}
+}
+
+// Claude behind Antigravity takes a token budget with includeThoughts. Without
+// them Antigravity never returns the reasoning.
+func TestOpenAIToGeminiClaudeThinkingUsesABudget(t *testing.T) {
+	for _, tc := range []struct {
+		effort, want string
+		maxOut       int
+	}{
+		{"low", `"thinkingBudget":2048`, 4000},
+		{"high", `"thinkingBudget":16384`, 4000},
+		{"max", `"thinkingBudget":32000`, 40000},
+	} {
+		in := `{"model":"claude-opus-4-6-thinking","max_tokens":` + strconv.Itoa(tc.maxOut) + `,"reasoning_effort":"` + tc.effort + `","messages":[{"role":"user","content":"hi"}]}`
+		out, err := OpenAIToGemini([]byte(in), memSigs{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := string(out)
+		if !strings.Contains(s, tc.want) || !strings.Contains(s, `"includeThoughts":true`) || strings.Contains(s, "thinkingLevel") {
+			t.Errorf("effort %s: thinkingConfig wrong:\n%s", tc.effort, s)
+		}
+	}
+	// The budget is spent from the output tokens, so the cap rises above it.
+	out, _ := OpenAIToGemini([]byte(`{"model":"claude-sonnet-4-6","max_tokens":4000,"reasoning_effort":"high","messages":[{"role":"user","content":"hi"}]}`), memSigs{})
+	if !strings.Contains(string(out), `"maxOutputTokens":20480`) {
+		t.Errorf("maxOutputTokens not raised above the budget:\n%s", out)
+	}
+	// No effort, or one that turns thinking off, sends no thinkingConfig.
+	for _, effort := range []string{"", `,"reasoning_effort":"minimal"`} {
+		out, _ := OpenAIToGemini([]byte(`{"model":"claude-sonnet-4-6","max_tokens":4000`+effort+`,"messages":[{"role":"user","content":"hi"}]}`), memSigs{})
+		if strings.Contains(string(out), "thinkingConfig") {
+			t.Errorf("thinkingConfig sent for %q:\n%s", effort, out)
+		}
+	}
+}
+
+func TestGeminiStreamToOpenAI(t *testing.T) {
+	sigs := memSigs{}
+	src := `data: {"response":{"responseId":"r1","modelVersion":"gemini-3-flash","candidates":[{"content":{"role":"model","parts":[{"text":"think","thought":true,"thoughtSignature":"S"}]}}]}}` + "\n\n" +
+		`data: {"response":{"candidates":[{"content":{"parts":[{"text":"Hi"},{"functionCall":{"id":"fc1","name":"f","args":{"a":1}}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":3,"thoughtsTokenCount":2}}}` + "\n\n"
+	var o buf
+	GeminiStreamToOpenAI(&o, strings.NewReader(src), sigs)
+	s := o.String()
+	for _, want := range []string{`"reasoning_content":"think"`, `"content":"Hi"`, `"arguments":"{\"a\":1}"`, `"id":"fc1"`,
+		`"finish_reason":"tool_calls"`, `"prompt_tokens":7`, `"completion_tokens":5`, "[DONE]"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("chunks missing %s:\n%s", want, s)
+		}
+	}
+	if sigs["fc1"] != "S" {
+		t.Errorf("signature not recorded for the call: %v", sigs)
+	}
+}
+
+// T3-5: the tool_calls index comes from upstream JSON. A negative index panicked
+// and a huge one grew the slice until the process ran out of memory.
+func TestCollectOpenAIStreamToolCallIndexIsBounded(t *testing.T) {
+	for _, idx := range []string{"-1", "1000000000"} {
+		src := `data: {"id":"c","model":"m","choices":[{"delta":{"tool_calls":[{"index":` + idx +
+			`,"id":"t","type":"function","function":{"name":"f","arguments":"{\"a\":1}"}}]}}]}` + "\n\n" +
+			`data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}` + "\n\n" +
+			"data: [DONE]\n\n"
+		m := mustJSON(t, CollectOpenAIStream(strings.NewReader(src)))
+		msg := m["choices"].([]any)[0].(map[string]any)["message"].(map[string]any)
+		tcs, _ := msg["tool_calls"].([]any)
+		if len(tcs) > 1 {
+			t.Errorf("index %s gave %d tool calls, want at most 1: %s", idx, len(tcs), j(tcs))
+		}
+	}
+}
+
+// An index inside the bound still collects, and the arguments of one call never
+// land on another call.
+func TestCollectOpenAIStreamKeepsEachToolCallSeparate(t *testing.T) {
+	src := `data: {"id":"c","model":"m","choices":[{"delta":{"tool_calls":[` +
+		`{"index":0,"id":"t0","type":"function","function":{"name":"f0","arguments":"{\"a\":1}"}},` +
+		`{"index":2,"id":"t2","type":"function","function":{"name":"f2","arguments":"{\"b\""}}]}}]}` + "\n\n" +
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":2,"function":{"arguments":":2}"}}]},"finish_reason":"tool_calls"}]}` + "\n\n" +
+		"data: [DONE]\n\n"
+	m := mustJSON(t, CollectOpenAIStream(strings.NewReader(src)))
+	msg := m["choices"].([]any)[0].(map[string]any)["message"].(map[string]any)
+	tcs, _ := msg["tool_calls"].([]any)
+	if len(tcs) != 2 {
+		t.Fatalf("tool_calls = %s, want 2 calls", j(tcs))
+	}
+	if got := j(tcs[0]); !strings.Contains(got, `"name":"f0"`) || !strings.Contains(got, `"arguments":"{\"a\":1}"`) {
+		t.Errorf("first call = %s", got)
+	}
+	if got := j(tcs[1]); !strings.Contains(got, `"name":"f2"`) || !strings.Contains(got, `"arguments":"{\"b\":2}"`) {
+		t.Errorf("second call = %s", got)
+	}
+}
+
+// T3-6: tool_choice in its object form must force the named tool.
+func TestOpenAIToGeminiToolChoice(t *testing.T) {
+	req := func(choice string) string {
+		return `{"model":"gemini-3-flash","messages":[{"role":"user","content":"hi"}],
+		 "tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object"}}},
+		          {"type":"function","function":{"name":"2fa","parameters":{"type":"object"}}}],
+		 "tool_choice":` + choice + `}`
+	}
+	out, err := OpenAIToGemini([]byte(req(`{"type":"function","function":{"name":"2fa"}}`)), memSigs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := j(mustJSON(t, out)["toolConfig"])
+	want := `{"functionCallingConfig":{"allowedFunctionNames":["_2fa"],"mode":"ANY"}}`
+	if got != want {
+		t.Errorf("toolConfig = %s, want %s", got, want)
+	}
+	for choice, mode := range map[string]string{`"required"`: "ANY", `"none"`: "NONE", `"auto"`: "VALIDATED"} {
+		out, err := OpenAIToGemini([]byte(req(choice)), memSigs{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := `{"functionCallingConfig":{"mode":"` + mode + `"}}`
+		if got := j(mustJSON(t, out)["toolConfig"]); got != want {
+			t.Errorf("tool_choice %s gave %s, want %s", choice, got, want)
+		}
+	}
+}
+
+// T3-7: reasoning crosses the OpenAI and Anthropic request shapes.
+func TestOpenAIToAnthropicReasoning(t *testing.T) {
+	mb := mustBytes(t)
+	req := func(extra string) string {
+		return `{"model":"m","temperature":0.2,"top_p":0.9,` + extra +
+			`"messages":[{"role":"user","content":"hi"}]}`
+	}
+	m := mustJSON(t, mb(OpenAIToAnthropic([]byte(req(`"max_tokens":16000,"reasoning_effort":"high",`)))))
+	th, _ := m["thinking"].(map[string]any)
+	if th == nil || th["type"] != "enabled" {
+		t.Fatalf("thinking = %s, want an enabled block", j(m["thinking"]))
+	}
+	b, ok := th["budget_tokens"].(float64)
+	if !ok || b < 1024 || b >= 16000 {
+		t.Errorf("budget_tokens = %s, want 1024 <= b < 16000", j(th["budget_tokens"]))
+	}
+	if _, ok := m["temperature"]; ok {
+		t.Errorf("temperature kept with thinking on: %s", j(m))
+	}
+	if _, ok := m["top_p"]; ok {
+		t.Errorf("top_p kept with thinking on: %s", j(m))
+	}
+
+	// max_tokens too small to hold a thinking budget: no thinking block.
+	small := mustJSON(t, mb(OpenAIToAnthropic([]byte(req(`"max_tokens":500,"reasoning_effort":"high",`)))))
+	if _, ok := small["thinking"]; ok {
+		t.Errorf("max_tokens 500 produced a thinking block: %s", j(small))
+	}
+
+	// No reasoning_effort, and effort "none", stay exactly as they are today.
+	base := mb(OpenAIToAnthropic([]byte(req(`"max_tokens":16000,`))))
+	none := mb(OpenAIToAnthropic([]byte(req(`"max_tokens":16000,"reasoning_effort":"none",`))))
+	if !bytes.Equal(base, none) {
+		t.Errorf("effort none changed the request:\n%s\n%s", base, none)
+	}
+	if bm := mustJSON(t, base); bm["temperature"] == nil || bm["thinking"] != nil {
+		t.Errorf("plain request changed: %s", base)
+	}
+
+	// Forced tool_choice (required or named tool) turns thinking off to avoid Anthropic 400.
+	forcedReq := mustJSON(t, mb(OpenAIToAnthropic([]byte(req(`"max_tokens":16000,"reasoning_effort":"high","tool_choice":"required",`)))))
+	if _, ok := forcedReq["thinking"]; ok {
+		t.Errorf("forced tool_choice (required) kept thinking on: %s", j(forcedReq))
+	}
+	if tc, ok := forcedReq["tool_choice"].(map[string]any); !ok || tc["type"] != "any" {
+		t.Errorf("forced tool_choice (required) not translated properly: %s", j(forcedReq))
+	}
+	if _, ok := forcedReq["temperature"]; !ok {
+		t.Errorf("temperature removed when thinking turned off for forced tool: %s", j(forcedReq))
+	}
+
+	forcedNamedReq := mustJSON(t, mb(OpenAIToAnthropic([]byte(req(`"max_tokens":16000,"reasoning_effort":"high","tool_choice":{"type":"function","function":{"name":"my_tool"}},`)))))
+	if _, ok := forcedNamedReq["thinking"]; ok {
+		t.Errorf("forced tool_choice (named tool) kept thinking on: %s", j(forcedNamedReq))
+	}
+	if tc, ok := forcedNamedReq["tool_choice"].(map[string]any); !ok || tc["type"] != "tool" || tc["name"] != "my_tool" {
+		t.Errorf("forced tool_choice (named tool) not translated properly: %s", j(forcedNamedReq))
+	}
+
+	// Unforced tool_choice (auto or none) allows thinking.
+	autoReq := mustJSON(t, mb(OpenAIToAnthropic([]byte(req(`"max_tokens":16000,"reasoning_effort":"high","tool_choice":"auto",`)))))
+	if th, _ := autoReq["thinking"].(map[string]any); th == nil || th["type"] != "enabled" {
+		t.Errorf("tool_choice:auto did not enable thinking: %s", j(autoReq))
+	}
+	if tc, ok := autoReq["tool_choice"].(map[string]any); !ok || tc["type"] != "auto" {
+		t.Errorf("tool_choice:auto not preserved: %s", j(autoReq))
+	}
+}
+
+func TestAnthropicToOpenAIReasoning(t *testing.T) {
+	mb := mustBytes(t)
+	req := func(thinking string) string {
+		return `{"model":"m","max_tokens":20000,"thinking":` + thinking +
+			`,"messages":[{"role":"user","content":"hi"}]}`
+	}
+	for _, c := range []struct {
+		budget string
+		want   string
+	}{{"1500", "low"}, {"6000", "medium"}, {"10000", "high"}} {
+		m := mustJSON(t, mb(AnthropicToOpenAI([]byte(req(`{"type":"enabled","budget_tokens":`+c.budget+`}`)))))
+		if m["reasoning_effort"] != c.want {
+			t.Errorf("budget %s gave reasoning_effort %s, want %q", c.budget, j(m["reasoning_effort"]), c.want)
+		}
+	}
+	m := mustJSON(t, mb(AnthropicToOpenAI([]byte(req(`{"type":"disabled"}`)))))
+	if _, ok := m["reasoning_effort"]; ok {
+		t.Errorf("disabled thinking set reasoning_effort: %s", j(m))
+	}
+}
+
+func TestReasoningEffortFilterRemovesFieldFromTranslatedRequest(t *testing.T) {
+	mb := mustBytes(t)
+	anthropicReq := `{"model":"m","max_tokens":20000,"thinking":{"type":"enabled","budget_tokens":10000},"messages":[{"role":"user","content":"hi"}]}`
+	openaiReqBytes := mb(AnthropicToOpenAI([]byte(anthropicReq)))
+
+	m := mustJSON(t, openaiReqBytes)
+	if m["reasoning_effort"] != "high" {
+		t.Fatalf("expected reasoning_effort: high in translated request, got %v", m["reasoning_effort"])
+	}
+
+	rule, err := filter.Compile(filter.Field, "reasoning_effort")
+	if err != nil {
+		t.Fatalf("filter.Compile: %v", err)
+	}
+
+	filteredBytes, changed := filter.Apply(openaiReqBytes, []filter.Rule{rule})
+	if !changed {
+		t.Fatalf("filter.Apply returned changed=false; want true")
+	}
+
+	filteredJSON := mustJSON(t, filteredBytes)
+	if _, ok := filteredJSON["reasoning_effort"]; ok {
+		t.Errorf("reasoning_effort was not removed by the filter: %s", string(filteredBytes))
+	}
+	if filteredJSON["model"] != "m" {
+		t.Errorf("expected model to remain 'm', got %v", filteredJSON["model"])
+	}
+}
+
+// mustBytes returns a translator's body, or fails the test on its error.
+func mustBytes(t *testing.T) func([]byte, error) []byte {
+	return func(b []byte, err error) []byte {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+}
+
+// A JSON schema the client asks the answer to follow crosses every translator.
+func TestStructuredOutputCrossesEveryTranslator(t *testing.T) {
+	schema := `{"additionalProperties":false,"properties":{"title":{"type":"string"}},"required":["title"],"type":"object"}` // keys sorted, as json.Marshal writes them
+	chat := `{"model":"m","messages":[{"role":"user","content":"hi"}],"response_format":{"type":"json_schema","json_schema":{"name":"t","strict":true,"schema":` + schema + `}}}`
+
+	g, err := OpenAIToGemini([]byte(chat), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gen := mustJSON(t, g)["generationConfig"].(map[string]any)
+	if gen["responseMimeType"] != "application/json" || !strings.Contains(j(gen["responseSchema"]), `"title":{"type":"string"}`) ||
+		strings.Contains(j(gen["responseSchema"]), "additionalProperties") {
+		t.Errorf("gemini generationConfig = %s", j(gen))
+	}
+	a, _ := OpenAIToAnthropic([]byte(chat))
+	if got := j(mustJSON(t, a)["output_config"]); got != `{"format":{"schema":`+schema+`,"type":"json_schema"}}` {
+		t.Errorf("anthropic output_config = %s", got)
+	}
+	r, _ := OpenAIToResponses([]byte(strings.Replace(chat, `"model":"m",`, `"model":"m","verbosity":"low",`, 1)))
+	if got := j(mustJSON(t, r)["text"]); got != `{"format":{"name":"t","schema":`+schema+`,"strict":true,"type":"json_schema"},"verbosity":"low"}` {
+		t.Errorf("responses text = %s", got)
+	}
+	o, _ := AnthropicToOpenAI([]byte(`{"model":"m","max_tokens":10,"messages":[{"role":"user","content":"hi"}],"output_config":{"format":{"type":"json_schema","schema":` + schema + `}}}`))
+	if got := j(mustJSON(t, o)["response_format"]); got != `{"json_schema":{"name":"response","schema":`+schema+`},"type":"json_schema"}` {
+		t.Errorf("openai response_format = %s", got)
+	}
+
+	// JSON mode without a schema: Gemini and Responses have it, Anthropic does not.
+	jm := `{"model":"m","messages":[{"role":"user","content":"hi"}],"response_format":{"type":"json_object"}}`
+	g, _ = OpenAIToGemini([]byte(jm), nil)
+	if gen := mustJSON(t, g)["generationConfig"].(map[string]any); gen["responseMimeType"] != "application/json" || gen["responseSchema"] != nil {
+		t.Errorf("gemini json mode = %s", j(gen))
+	}
+	a, _ = OpenAIToAnthropic([]byte(jm))
+	if _, has := mustJSON(t, a)["output_config"]; has {
+		t.Errorf("anthropic json mode = %s", a)
+	}
+	r, _ = OpenAIToResponses([]byte(jm))
+	if got := j(mustJSON(t, r)["text"]); got != `{"format":{"type":"json_object"}}` {
+		t.Errorf("responses json mode = %s", got)
+	}
+}

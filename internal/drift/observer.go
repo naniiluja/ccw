@@ -1,0 +1,373 @@
+package drift
+
+import (
+	"log"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/naniiluja/ccw/internal/store"
+)
+
+// Tuning. A key learns silently for its first observations; a field counts
+// as gone when a field that was nearly always there has been missing for a
+// run of observations.
+const (
+	learnObservations = 3
+	goneAfter         = 20
+	goneMinSeen       = 20
+	goneMinRatio      = 0.9
+	queueSize         = 256
+	flushEvery        = 30 * time.Second
+	sampleLimit       = 300
+)
+
+// Directions of an observed document.
+const (
+	Request  = "request"  // what a client sent to ccw
+	Response = "response" // what a provider answered
+)
+
+type field struct {
+	typ      string
+	seen     int64
+	firstObs int64
+	lastObs  int64
+	gone     bool
+	lastAt   string
+	dirty    bool
+	// legacy marks a "{*}" path the old collapsing rule learned. It never
+	// reports a removal, and a real field name may take its counters over.
+	legacy bool
+}
+
+type key struct {
+	obs    int64
+	fields map[string]*field
+	dirty  bool
+}
+
+type job struct {
+	dir, provider, endpoint, client, clientKeyID string
+	body                                         []byte
+	sse                                          bool
+}
+
+// Observer learns structures and records their changes. Observe never blocks
+// a request: when the queue is full, the document is skipped.
+type Observer struct {
+	store *store.Store
+	q     chan job
+	mu    sync.Mutex
+	keys  map[string]*key
+}
+
+// New starts an observer that loads what was learned before.
+func New(s *store.Store) *Observer { return newObserver(s, true) }
+
+// newObserver builds an observer; without background work, only Drain
+// processes the queue, in order (for tests).
+func newObserver(s *store.Store, background bool) *Observer {
+	o := &Observer{store: s, q: make(chan job, queueSize), keys: map[string]*key{}}
+	if counts, fields, err := s.LoadShapes(); err == nil {
+		for k, n := range counts {
+			o.keys[k] = &key{obs: n, fields: map[string]*field{}}
+		}
+		for _, f := range fields {
+			kk := o.keys[f.Key]
+			if kk == nil {
+				kk = &key{fields: map[string]*field{}}
+				o.keys[f.Key] = kk
+			}
+			kk.fields[f.Path] = &field{typ: f.Type, seen: f.Seen, firstObs: f.FirstObs, lastObs: f.LastObs, gone: f.Gone, lastAt: f.LastAt, legacy: f.Legacy}
+		}
+	} else {
+		log.Printf("drift: load: %v", err)
+	}
+	if background {
+		go o.run()
+	}
+	return o
+}
+
+// Observe queues one document. body is copied by the caller or not reused.
+func (o *Observer) Observe(dir, provider, endpoint string, body []byte, sse bool) {
+	o.ObserveFrom(dir, provider, "", endpoint, body, sse)
+}
+
+// ObserveFrom queues a document sent by a named client. Requests are learned
+// per client, so one client's habits (a field it always sends) do not read as
+// another client's change.
+func (o *Observer) ObserveFrom(dir, provider, client, endpoint string, body []byte, sse bool) {
+	o.ObserveFromKey(dir, provider, client, "", endpoint, body, sse)
+}
+
+// ObserveFromKey queues a document sent by a named client and API key.
+func (o *Observer) ObserveFromKey(dir, provider, client, keyID, endpoint string, body []byte, sse bool) {
+	if o == nil || len(body) == 0 {
+		return
+	}
+	select {
+	case o.q <- job{dir, provider, endpoint, client, keyID, body, sse}:
+	default:
+	}
+}
+
+func (o *Observer) run() {
+	t := time.NewTicker(flushEvery)
+	defer t.Stop()
+	for {
+		select {
+		case j := <-o.q:
+			o.process(j)
+		case <-t.C:
+			o.Flush()
+		}
+	}
+}
+
+// keyOf joins the parts of a structure key.
+func keyOf(dir, provider, endpoint, event string) string {
+	return dir + "|" + provider + "|" + endpoint + "|" + event
+}
+
+func (o *Observer) process(j job) {
+	var events []Event
+	if j.sse {
+		events = SplitSSE(j.body)
+	} else {
+		events = []Event{{Body: j.body}}
+	}
+	for _, ev := range events {
+		paths := Paths(ev.Body)
+		if paths == nil {
+			continue
+		}
+		o.observe(j.dir, j.provider, j.endpoint, j.client, j.clientKeyID, ev.Name, paths, ev.Body, false)
+	}
+}
+
+// Seed learns documents as the reference structure, recording no change:
+// captures of the real tool, taken before ccw serves it.
+func (o *Observer) Seed(dir, provider, endpoint string, body []byte, sse bool) int {
+	var events []Event
+	if sse {
+		events = SplitSSE(body)
+	} else {
+		events = []Event{{Body: body}}
+	}
+	n := 0
+	for _, ev := range events {
+		if paths := Paths(ev.Body); paths != nil {
+			o.observe(dir, provider, endpoint, "", "", ev.Name, paths, ev.Body, true)
+			n++
+		}
+	}
+	return n
+}
+
+func (o *Observer) observe(dir, provider, endpoint, client, clientKeyID, event string, paths map[string]string, body []byte, quiet bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	ep := endpoint
+	if client != "" {
+		ep += "@" + client
+	}
+	k := keyOf(dir, provider, ep, event)
+	kk := o.keys[k]
+	if kk == nil {
+		kk = &key{fields: map[string]*field{}}
+		o.keys[k] = kk
+	}
+	kk.obs++
+	kk.dirty = true
+	now := time.Now().UTC().Format(time.RFC3339)
+	learning := quiet || kk.obs <= learnObservations
+	var changes []store.ShapeChange
+	change := func(path, kind, oldT, newT string) {
+		if learning {
+			return
+		}
+		changes = append(changes, store.ShapeChange{At: now, Direction: dir, Provider: provider, Endpoint: endpoint,
+			Event: event, Path: path, Kind: kind, OldType: oldT, NewType: newT, Sample: sample(body), Client: client, ClientKeyID: clientKeyID})
+	}
+	for p, t := range paths {
+		f := kk.fields[p]
+		if f == nil {
+			// The old rule collapsed this name to "{*}". Take that entry's
+			// counters over, so the rename is no change for the review.
+			if lp := legacyPath(p); lp != p {
+				if lf := kk.fields[lp]; lf != nil && lf.legacy {
+					kk.fields[p] = &field{typ: MergeTypes(lf.typ, t), seen: lf.seen + 1, firstObs: lf.firstObs,
+						lastObs: kk.obs, lastAt: now, dirty: true}
+					continue
+				}
+			}
+			kk.fields[p] = &field{typ: t, seen: 1, firstObs: kk.obs, lastObs: kk.obs, lastAt: now, dirty: true}
+			change(p, "added", "", t)
+			continue
+		}
+		if f.gone {
+			f.gone = false
+			change(p, "returned", "", t)
+		}
+		// A type already in the field's set is not a change; a new one is, and
+		// joins the set.
+		if t != "null" && !SubsetOf(t, f.typ) {
+			merged := MergeTypes(f.typ, t)
+			if f.typ != "null" {
+				change(p, "type", f.typ, merged)
+			}
+			f.typ = merged
+		}
+		f.seen++
+		f.lastObs = kk.obs
+		f.lastAt = now
+		f.dirty = true
+	}
+	for p, f := range kk.fields {
+		if f.legacy || f.gone || kk.obs-f.lastObs < goneAfter || f.seen < goneMinSeen {
+			continue
+		}
+		span := f.lastObs - f.firstObs + 1
+		if float64(f.seen)/float64(span) >= goneMinRatio {
+			f.gone = true
+			f.dirty = true
+			change(p, "removed", f.typ, "")
+		}
+	}
+	for _, c := range topmost(changes) {
+		if err := o.store.AddShapeChange(c); err != nil {
+			log.Printf("drift: %v", err)
+		}
+	}
+}
+
+// sample keeps the start of the document a change was seen in.
+func sample(b []byte) string {
+	if len(b) > sampleLimit {
+		return string(b[:sampleLimit]) + "…"
+	}
+	return string(b)
+}
+
+// Flush writes the learned counters to the database.
+func (o *Observer) Flush() {
+	if o == nil {
+		return
+	}
+	o.mu.Lock()
+	counts := map[string]int64{}
+	var fields []store.ShapeField
+	var clearedKeys []string
+	var clearedFields [][2]string
+	for k, kk := range o.keys {
+		if kk.dirty {
+			counts[k] = kk.obs
+			kk.dirty = false
+			clearedKeys = append(clearedKeys, k)
+		}
+		for p, f := range kk.fields {
+			if f.dirty {
+				fields = append(fields, store.ShapeField{Key: k, Path: p, Type: f.typ, Seen: f.seen,
+					FirstObs: f.firstObs, LastObs: f.lastObs, Gone: f.gone, LastAt: f.lastAt, Legacy: f.legacy})
+				f.dirty = false
+				clearedFields = append(clearedFields, [2]string{k, p})
+			}
+		}
+	}
+	o.mu.Unlock()
+	if len(counts) == 0 && len(fields) == 0 {
+		return
+	}
+	if err := o.store.SaveShapes(counts, fields); err != nil {
+		log.Printf("drift: save: %v", err)
+		// The write failed, so restore the dirty marks: the next flush retries
+		// these observations instead of losing them.
+		o.mu.Lock()
+		for _, k := range clearedKeys {
+			if kk := o.keys[k]; kk != nil {
+				kk.dirty = true
+			}
+		}
+		for _, kp := range clearedFields {
+			if kk := o.keys[kp[0]]; kk != nil {
+				if f := kk.fields[kp[1]]; f != nil {
+					f.dirty = true
+				}
+			}
+		}
+		o.mu.Unlock()
+	}
+}
+
+// Fields returns what is known of the keys matching a direction and provider
+// ("" matches any), for the API and MCP.
+func (o *Observer) Fields(dir, provider, endpoint string) []store.ShapeField {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	var out []store.ShapeField
+	for k, kk := range o.keys {
+		parts := strings.SplitN(k, "|", 4)
+		if len(parts) != 4 {
+			continue
+		}
+		ep, _, _ := strings.Cut(parts[2], "@")
+		if (dir != "" && parts[0] != dir) || (provider != "" && parts[1] != provider) || (endpoint != "" && ep != endpoint) {
+			continue
+		}
+		for p, f := range kk.fields {
+			out = append(out, store.ShapeField{Key: k, Path: p, Type: f.typ, Seen: f.seen, FirstObs: f.firstObs,
+				LastObs: f.lastObs, Gone: f.gone, LastAt: f.lastAt})
+		}
+	}
+	return out
+}
+
+// Drain processes what is queued; tests use it to wait for the observer.
+func (o *Observer) Drain() {
+	for {
+		select {
+		case j := <-o.q:
+			o.process(j)
+		default:
+			return
+		}
+	}
+}
+
+// topmost drops an added or removed field whose parent is added or removed in
+// the same document: a new object is one change, not one per field inside it.
+func topmost(cs []store.ShapeChange) []store.ShapeChange {
+	whole := map[string]bool{}
+	for _, c := range cs {
+		if c.Kind == "added" || c.Kind == "removed" {
+			whole[c.Kind+" "+c.Path] = true
+		}
+	}
+	var out []store.ShapeChange
+	for _, c := range cs {
+		skip := false
+		for p := parent(c.Path); p != ""; p = parent(p) {
+			if whole[c.Kind+" "+p] {
+				skip = true
+				break
+			}
+		}
+		if !skip {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// parent returns the path one level up: "a[].b.c" → "a[].b" → "a[]" → "a".
+func parent(p string) string {
+	if strings.HasSuffix(p, "[]") {
+		return strings.TrimSuffix(p, "[]")
+	}
+	if i := strings.LastIndexByte(p, '.'); i > 0 {
+		return p[:i]
+	}
+	return ""
+}

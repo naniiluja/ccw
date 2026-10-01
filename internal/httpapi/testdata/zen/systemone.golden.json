@@ -1,0 +1,24 @@
+{
+ "body": {
+  "model": "jev-1.13-free",
+  "questions": {
+   "q": {
+    "criteria": {
+     "a": "x",
+     "b": "y"
+    },
+    "instructions": "pick",
+    "type": "choice"
+   }
+  },
+  "state": "text"
+ },
+ "headers": {
+  "accept": "text/event-stream",
+  "authorization": "Bearer public",
+  "content-type": "application/json",
+  "user-agent": "opencode/latest/2.0.8/cli",
+  "x-opencode-client": "cli"
+ },
+ "path": "/systemone"
+}

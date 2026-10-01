@@ -1,0 +1,97 @@
+{
+ "body": {
+  "input": [
+   {
+    "content": [
+     {
+      "text": "hi",
+      "type": "input_text"
+     }
+    ],
+    "role": "user",
+    "type": "message"
+   },
+   {
+    "content": [
+     {
+      "text": "calling",
+      "type": "output_text"
+     }
+    ],
+    "role": "assistant",
+    "type": "message"
+   },
+   {
+    "arguments": "{\"q\":1}",
+    "call_id": "c1",
+    "name": "lookup",
+    "type": "function_call"
+   },
+   {
+    "call_id": "c1",
+    "output": "found",
+    "type": "function_call_output"
+   }
+  ],
+  "instructions": "be brief",
+  "max_output_tokens": 200,
+  "model": "muse-spark-1.3-contributor-free",
+  "prompt_cache_key": "<session>",
+  "reasoning": {
+   "effort": "low"
+  },
+  "store": false,
+  "stream": true,
+  "temperature": 0.5,
+  "text": {
+   "format": {
+    "type": "json_object"
+   }
+  },
+  "tool_choice": "auto",
+  "tools": [
+   {
+    "description": "look",
+    "name": "lookup",
+    "parameters": {
+     "type": "object"
+    },
+    "type": "function"
+   },
+   {
+    "description": "The `read` tool, as exposed by the caller's agent session.",
+    "name": "read",
+    "parameters": {
+     "properties": {
+      "path": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "path"
+     ],
+     "type": "object"
+    },
+    "type": "function"
+   },
+   {
+    "description": "The `shell` tool, as exposed by the caller's agent session.",
+    "name": "shell",
+    "parameters": {
+     "properties": {},
+     "required": [],
+     "type": "object"
+    },
+    "type": "function"
+   }
+  ]
+ },
+ "headers": {
+  "accept": "text/event-stream",
+  "authorization": "Bearer public",
+  "content-type": "application/json",
+  "user-agent": "opencode/latest/2.0.8/cli",
+  "x-opencode-client": "cli"
+ },
+ "path": "/responses"
+}

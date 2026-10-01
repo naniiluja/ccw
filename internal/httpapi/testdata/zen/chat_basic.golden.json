@@ -1,0 +1,54 @@
+{
+ "body": {
+  "max_tokens": 50,
+  "messages": [
+   {
+    "content": "hi",
+    "role": "user"
+   }
+  ],
+  "model": "big-pickle",
+  "stream": true,
+  "temperature": 0.2,
+  "tools": [
+   {
+    "function": {
+     "description": "The `read` tool, as exposed by the caller's agent session.",
+     "name": "read",
+     "parameters": {
+      "properties": {
+       "path": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "path"
+      ],
+      "type": "object"
+     }
+    },
+    "type": "function"
+   },
+   {
+    "function": {
+     "description": "The `shell` tool, as exposed by the caller's agent session.",
+     "name": "shell",
+     "parameters": {
+      "properties": {},
+      "required": [],
+      "type": "object"
+     }
+    },
+    "type": "function"
+   }
+  ]
+ },
+ "headers": {
+  "accept": "text/event-stream",
+  "authorization": "Bearer public",
+  "content-type": "application/json",
+  "user-agent": "opencode/latest/2.0.8/cli",
+  "x-opencode-client": "cli"
+ },
+ "path": "/chat/completions"
+}

@@ -1,0 +1,95 @@
+{
+ "body": {
+  "messages": [
+   {
+    "content": "be brief",
+    "role": "system"
+   },
+   {
+    "content": "weather?",
+    "role": "user"
+   },
+   {
+    "content": null,
+    "role": "assistant",
+    "tool_calls": [
+     {
+      "function": {
+       "arguments": "{\"city\":\"HN\"}",
+       "name": "get_weather"
+      },
+      "id": "c1",
+      "type": "function"
+     }
+    ]
+   },
+   {
+    "content": "30C",
+    "role": "tool",
+    "tool_call_id": "c1"
+   }
+  ],
+  "model": "big-pickle",
+  "stream": true,
+  "stream_options": {
+   "include_usage": true
+  },
+  "tool_choice": "auto",
+  "tools": [
+   {
+    "function": {
+     "description": "weather",
+     "name": "get_weather",
+     "parameters": {
+      "properties": {
+       "city": {
+        "type": "string"
+       }
+      },
+      "type": "object"
+     }
+    },
+    "type": "function"
+   },
+   {
+    "function": {
+     "description": "The `read` tool, as exposed by the caller's agent session.",
+     "name": "read",
+     "parameters": {
+      "properties": {
+       "path": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "path"
+      ],
+      "type": "object"
+     }
+    },
+    "type": "function"
+   },
+   {
+    "function": {
+     "description": "The `shell` tool, as exposed by the caller's agent session.",
+     "name": "shell",
+     "parameters": {
+      "properties": {},
+      "required": [],
+      "type": "object"
+     }
+    },
+    "type": "function"
+   }
+  ],
+  "user": "u-1"
+ },
+ "headers": {
+  "accept": "text/event-stream",
+  "authorization": "Bearer public",
+  "content-type": "application/json",
+  "user-agent": "opencode/latest/2.0.8/cli",
+  "x-opencode-client": "cli"
+ },
+ "path": "/chat/completions"
+}

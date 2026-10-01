@@ -1,0 +1,13 @@
+/ccw
+/ccw.exe
+/*.db
+/*.db-shm
+/*.db-wal
+/ccw-linux
+/ccw-local.exe
+temp/
+*.env
+ccw.env
+dist/
+.claude/worktrees/
+.claude/settings.local.json

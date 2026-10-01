@@ -1,0 +1,157 @@
+{
+ "chat_basic": {
+  "body": {
+   "max_tokens": 50,
+   "messages": [
+    {
+     "content": "hi",
+     "role": "user"
+    }
+   ],
+   "model": "big-pickle",
+   "temperature": 0.2
+  },
+  "path": "/v1/chat/completions"
+ },
+ "chat_tools": {
+  "body": {
+   "messages": [
+    {
+     "content": "be brief",
+     "role": "system"
+    },
+    {
+     "content": "weather?",
+     "role": "user"
+    },
+    {
+     "content": null,
+     "role": "assistant",
+     "tool_calls": [
+      {
+       "function": {
+        "arguments": "{\"city\":\"HN\"}",
+        "name": "get_weather"
+       },
+       "id": "c1",
+       "type": "function"
+      }
+     ]
+    },
+    {
+     "content": "30C",
+     "role": "tool",
+     "tool_call_id": "c1"
+    }
+   ],
+   "metadata": {
+    "x": 1
+   },
+   "model": "big-pickle",
+   "stream": true,
+   "stream_options": {
+    "include_usage": true
+   },
+   "tool_choice": "auto",
+   "tools": [
+    {
+     "function": {
+      "description": "weather",
+      "name": "get_weather",
+      "parameters": {
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "user": "u-1"
+  },
+  "path": "/v1/chat/completions"
+ },
+ "responses_muse": {
+  "body": {
+   "max_tokens": 200,
+   "messages": [
+    {
+     "content": "be brief",
+     "role": "system"
+    },
+    {
+     "content": [
+      {
+       "text": "hi",
+       "type": "text"
+      }
+     ],
+     "role": "user"
+    },
+    {
+     "content": "calling",
+     "role": "assistant",
+     "tool_calls": [
+      {
+       "function": {
+        "arguments": "{\"q\":1}",
+        "name": "lookup"
+       },
+       "id": "c1",
+       "type": "function"
+      }
+     ]
+    },
+    {
+     "content": "found",
+     "role": "tool",
+     "tool_call_id": "c1"
+    }
+   ],
+   "model": "muse-spark-1.3-contributor-free",
+   "reasoning_effort": "low",
+   "response_format": {
+    "type": "json_object"
+   },
+   "temperature": 0.5,
+   "tool_choice": "required",
+   "tools": [
+    {
+     "function": {
+      "description": "look",
+      "name": "lookup",
+      "parameters": {
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ]
+  },
+  "path": "/v1/chat/completions"
+ },
+ "systemone": {
+  "body": {
+   "model": "jev-latest",
+   "questions": {
+    "q": {
+     "criteria": {
+      "a": "x",
+      "b": "y"
+     },
+     "instructions": "pick",
+     "type": "choice"
+    }
+   },
+   "state": "text",
+   "stream": true,
+   "tools": [
+    {}
+   ]
+  },
+  "path": "/v1/systemone"
+ }
+}

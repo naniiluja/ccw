@@ -1,0 +1,20 @@
+{
+  "name": "ccw-gateway",
+  "version": "0.1.8",
+  "description": "ccw: a credential proxy for LLM providers, one base URL for every account",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/naniiluja/ccw.git" },
+  "homepage": "https://github.com/naniiluja/ccw#readme",
+  "keywords": ["llm", "proxy", "gateway", "openai", "anthropic", "gemini", "claude-code"],
+  "bin": { "ccw": "bin/ccw.js" },
+  "files": ["bin", "LICENSE"],
+  "engines": { "node": ">=18" },
+  "optionalDependencies": {
+    "ccw-gateway-linux-x64": "0.1.8",
+    "ccw-gateway-linux-arm64": "0.1.8",
+    "ccw-gateway-darwin-x64": "0.1.8",
+    "ccw-gateway-darwin-arm64": "0.1.8",
+    "ccw-gateway-windows-x64": "0.1.8",
+    "ccw-gateway-win32-arm64": "0.1.8"
+  }
+}

@@ -1,0 +1,332 @@
+// Package provider holds the upstream table. A class B provider has a documented
+// API and is reached with a plain credential. A class A provider impersonates a
+// real tool, so it is only added once that tool's traffic has been captured and
+// the exact headers are known.
+package provider
+
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"sort"
+	"strings"
+)
+
+// Provider describes how to reach one upstream.
+//
+// Identity and Defaults differ in who wins. Identity names the tool and always
+// replaces what the caller sent, because a class A upstream answers differently
+// when it does not recognise the client. Defaults select features, so the caller
+// keeps control and a default only fills a header that is absent.
+//
+// An empty AuthHeader means the upstream takes no credential. A BaseURL that
+// holds {accountId} is completed per connection (see Setup).
+type Provider struct {
+	ID         string
+	BaseURL    string
+	AuthHeader string
+	AuthPrefix string
+	Identity   map[string]string
+	Defaults   map[string]string
+	// API is the request shape the upstream speaks: "anthropic", "typesafe", or
+	// empty for OpenAI Chat Completions. ccw translates between openai and
+	// anthropic when the caller uses the other one.
+	API string
+	// Setup tells the dashboard what a new connection needs besides a label:
+	// "key" (the default), "account" (a key and an account id), "none", or
+	// "oauth" (an account signs in; it cannot be added with a pasted key).
+	Setup string
+	// Models is the list to use when the upstream has no model endpoint.
+	Models []string
+	// Exchange names how the stored credential becomes the bearer the upstream
+	// takes: "copilot" trades a GitHub OAuth token for a Copilot token.
+	Exchange string
+	// RequestIDHeader, when set, carries a fresh random id on each request.
+	RequestIDHeader string
+	// AccountHeader, when set, carries the ChatGPT account id read from the
+	// access token's claims.
+	AccountHeader string
+	// SessionHeader, when set, carries a stable id per connection.
+	SessionHeader string
+	// ModelsQuery is appended to the model list URL.
+	ModelsQuery string
+	// ModelsPath, when set, replaces "/models": the list lives at the base
+	// without its "/v1", plus this path (Cloudflare's model search).
+	ModelsPath string
+	// ModelsURL, when set, is the model list's full URL ({accountId} is
+	// filled like the base URL's).
+	ModelsURL string
+	// NoModelList: the provider has no list; Models is the list.
+	NoModelList bool
+	// Clean means the caller's headers never go upstream: only Identity, the
+	// Defaults and the credential. A class A upstream that reads the whole
+	// request (the OpenCode Zen gate does) must not see the caller's tool.
+	Clean bool
+	// SessionHeaders name the headers that carry one conversation's upstream
+	// session id, set per call by the provider's own logic.
+	SessionHeaders []string
+	// DefaultSecret is the credential of a Setup "none" provider: a public key
+	// the upstream takes from anyone.
+	DefaultSecret string
+	// Watch turns on structure drift monitoring. It is set on the providers
+	// reached as a real tool (OAuth, impersonated clients), whose formats move
+	// with each tool release; a documented API does not need it.
+	Watch bool
+}
+
+// Generic is an OpenAI-compatible upstream that a connection defines itself
+// with its own id and base URL, such as a self-hosted or niche gateway.
+func Generic(id, baseURL string) Provider {
+	return GenericAPI(id, baseURL, "")
+}
+
+// GenericAPI is a custom upstream of a given request shape: "" or "openai"
+// (Chat Completions), "responses" (OpenAI Responses), or "anthropic"
+// (Messages, keyed with x-api-key as Anthropic's API is).
+func GenericAPI(id, baseURL, api string) Provider {
+	p := Provider{ID: id, BaseURL: baseURL, AuthHeader: "Authorization", AuthPrefix: "Bearer "}
+	switch api {
+	case "anthropic":
+		p.API = "anthropic"
+		p.AuthHeader, p.AuthPrefix = "X-Api-Key", ""
+		p.Defaults = map[string]string{"Anthropic-Version": "2023-06-01"}
+	case "responses":
+		p.API = "responses"
+	}
+	return p
+}
+
+// CustomAPIs are the request shapes a custom provider can speak.
+var CustomAPIs = []string{"openai", "anthropic", "responses"}
+
+// WithAccount completes a BaseURL that holds {accountId}.
+func (p Provider) WithAccount(accountID string) string {
+	return strings.ReplaceAll(p.BaseURL, "{accountId}", accountID)
+}
+
+// ClaudeInteractiveUserAgent names the interactive Claude Code CLI. Anthropic offers quota
+// resets only to this surface: the "sdk-cli" surface below gets ineligible:surface, and an
+// old version gets ineligible:cli_version. Measured on 2026-09-24 with Claude Code 2.1.281.
+const ClaudeInteractiveUserAgent = "claude-cli/2.1.281 (external, cli)"
+
+// Captured from Claude Code 2.1.278 on 2026-09-20. The upstream rejects an OAuth
+// token without claude-code-20250219 and oauth-2025-04-20, so this list is part
+// of the credential, not decoration.
+const claudeBeta = "claude-code-20250219,oauth-2025-04-20,context-1m-2025-08-07," +
+	"interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13," +
+	"context-management-2025-06-27,prompt-caching-scope-2026-01-05," +
+	"mid-conversation-system-2026-04-07,mid-conversation-tool-changes-2026-07-01," +
+	"advanced-tool-use-2025-11-20,mid-conversation-system-clear-at-2026-08-21," +
+	"effort-2025-11-24,fallback-credit-2026-06-01,thinking-binding-controls-2026-08-01," +
+	"extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07"
+
+var registry = map[string]Provider{
+	// GitHub Copilot, as the VS Code Copilot Chat extension reaches it. The
+	// stored credential is the GitHub OAuth token (gho_…); it is traded for a
+	// short-lived Copilot token before each call (see internal/httpapi/copilot.go).
+	"github": {
+		ID:         "github",
+		BaseURL:    "https://api.githubcopilot.com",
+		AuthHeader: "Authorization",
+		AuthPrefix: "Bearer ",
+		Exchange:   "copilot",
+		Watch:      true,
+		Identity: map[string]string{
+			"Copilot-Integration-Id":              "vscode-chat",
+			"Editor-Version":                      "vscode/" + CopilotVSCodeVersion,
+			"Editor-Plugin-Version":               "copilot-chat/" + CopilotChatVersion,
+			"User-Agent":                          "GitHubCopilotChat/" + CopilotChatVersion,
+			"Openai-Intent":                       "conversation-panel",
+			"X-Github-Api-Version":                CopilotAPIVersion,
+			"X-Vscode-User-Agent-Library-Version": "electron-fetch",
+			"X-Initiator":                         "user",
+		},
+		RequestIDHeader: "X-Request-Id",
+	},
+	// Codex, the ChatGPT backend the Codex CLI uses: the Responses API over
+	// HTTP with server-sent events, with the ChatGPT OAuth access token.
+	"codex": {
+		ID:         "codex",
+		BaseURL:    "https://chatgpt.com/backend-api/codex",
+		API:        "responses",
+		Watch:      true,
+		AuthHeader: "Authorization",
+		AuthPrefix: "Bearer ",
+		Identity: map[string]string{
+			"Originator": "codex_cli_rs",
+			"User-Agent": "codex_cli_rs/" + CodexCLIVersion,
+			"Version":    CodexCLIVersion,
+		},
+		Setup:         "oauth",
+		AccountHeader: "ChatGPT-Account-ID",
+		SessionHeader: "Session_id",
+		ModelsQuery:   "client_version=" + CodexCLIVersion,
+		Models: []string{"gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5",
+			"gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"},
+	},
+	// Antigravity: Google's Cloud Code Assist (v1internal) as the Antigravity
+	// IDE reaches it, with the Google OAuth token. The Gemini request travels
+	// inside an envelope naming the account's Cloud project.
+	"antigravity": {
+		ID:         "antigravity",
+		BaseURL:    "https://daily-cloudcode-pa.googleapis.com",
+		API:        "antigravity",
+		Watch:      true,
+		AuthHeader: "Authorization",
+		AuthPrefix: "Bearer ",
+		Identity:   map[string]string{"User-Agent": AntigravityUserAgent},
+		Setup:      "oauth",
+	},
+	"groq": {
+		ID:         "groq",
+		BaseURL:    "https://api.groq.com/openai/v1",
+		AuthHeader: "Authorization",
+		AuthPrefix: "Bearer ",
+	},
+	// Class B, documented OpenAI-compatible APIs: a plain Bearer credential.
+	"nvidia": {
+		ID:         "nvidia",
+		BaseURL:    "https://integrate.api.nvidia.com/v1",
+		AuthHeader: "Authorization",
+		AuthPrefix: "Bearer ",
+	},
+	// Cloudflare Workers AI serves an OpenAI-compatible API under the account.
+	"cloudflare-ai": {
+		ID:         "cloudflare-ai",
+		BaseURL:    "https://api.cloudflare.com/client/v4/accounts/{accountId}/ai/v1",
+		AuthHeader: "Authorization",
+		AuthPrefix: "Bearer ",
+		Setup:      "account",
+		// Workers AI has no OpenAI-style /models; its own search lists the
+		// text models with their properties (reasoning, paid plan).
+		ModelsPath:  "/models/search",
+		ModelsQuery: "task=Text%20Generation&per_page=100",
+		// Used when the search cannot be read.
+		Models: []string{
+			"@cf/deepseek-ai/deepseek-r1-distill-qwen-32b", "@cf/meta/llama-3.1-70b-instruct-fp8-fast",
+			"@cf/meta/llama-3.1-8b-instruct-awq", "@cf/meta/llama-3.1-8b-instruct-fp8-fast",
+			"@cf/meta/llama-3.2-1b-instruct", "@cf/meta/llama-3.2-3b-instruct",
+			"@cf/meta/llama-3.3-70b-instruct-fp8-fast", "@cf/mistralai/mistral-small-3.1-24b-instruct",
+			"@cf/moonshotai/kimi-k2.5", "@cf/moonshotai/kimi-k2.6", "@cf/qwen/qwen2.5-coder-32b-instruct",
+			"@cf/qwen/qwq-32b", "@cf/zai-org/glm-4.7-flash",
+		},
+	},
+	"openrouter": {
+		ID:         "openrouter",
+		BaseURL:    "https://openrouter.ai/api/v1",
+		AuthHeader: "Authorization",
+		AuthPrefix: "Bearer ",
+	},
+	// TypeSafe AI is not OpenAI-shaped (POST /systemone with a state+questions
+	// body), but it uses a Bearer token and returns a usage object, so the
+	// passthrough carries it without a translation layer. Captured from
+	// docs.typesafe.ai on 2026-09-21.
+	"typesafe": {
+		ID:         "typesafe",
+		BaseURL:    "https://api.typesafe.ai/v1",
+		API:        "typesafe",
+		Models:     []string{"jev-latest"},
+		AuthHeader: "Authorization",
+		AuthPrefix: "Bearer ",
+	},
+	// OpenCode Zen's free tier. It is meant to be called from inside the OpenCode
+	// agent and reads the request it gets, so this is a class A provider: the
+	// identity below and the request shaping in internal/zen are the contract.
+	// Measured on 2026-09-28; see internal/zen for the conditions.
+	"opencode": {
+		ID:             "opencode",
+		BaseURL:        "https://opencode.ai/zen/v1",
+		API:            "zen",
+		Setup:          "none",
+		DefaultSecret:  "public",
+		Clean:          true,
+		AuthHeader:     "Authorization",
+		AuthPrefix:     "Bearer ",
+		SessionHeaders: []string{"X-Opencode-Session", "X-Session-Id", "X-Session-Affinity"},
+		Identity: map[string]string{
+			"User-Agent":        OpenCodeUserAgent,
+			"X-Opencode-Client": "cli",
+			// One id per process, as the agent sends one per project.
+			"X-Opencode-Project": openCodeProject,
+		},
+		Defaults: map[string]string{
+			"Accept":       "text/event-stream",
+			"Content-Type": "application/json",
+		},
+	},
+	"claude": {
+		ID:      "claude",
+		BaseURL: "https://api.anthropic.com/v1",
+		API:     "anthropic",
+		Watch:   true,
+		Setup:   "oauth",
+		// Anthropic's /models needs a live token; this list stands in without one.
+		Models:     []string{"claude-opus-5", "claude-sonnet-5", "claude-fable-5-1", "claude-fable-5", "claude-haiku-4-5-20251001"},
+		AuthHeader: "Authorization",
+		AuthPrefix: "Bearer ",
+		Identity: map[string]string{
+			"User-Agent": "claude-cli/2.1.278 (external, sdk-cli)",
+			"X-App":      "cli",
+			"Anthropic-Dangerous-Direct-Browser-Access": "true",
+		},
+		Defaults: map[string]string{
+			"Anthropic-Version": "2023-06-01",
+			"Anthropic-Beta":    claudeBeta,
+		},
+	},
+}
+
+// The Copilot Chat versions ccw presents, from 9router's registry.
+const (
+	CopilotVSCodeVersion = "1.110.0"
+	CopilotChatVersion   = "0.38.0"
+	CopilotAPIVersion    = "2025-04-01"
+)
+
+// AntigravityUserAgent is the IDE identity Antigravity calls carry.
+const (
+	AntigravityVersion   = "2.11.0"
+	AntigravityUserAgent = "antigravity/ide/" + AntigravityVersion + " darwin/arm64"
+)
+
+// OpenCodeUserAgent is the agent identity OpenCode Zen calls carry. The upstream
+// wants "opencode/" and a version of 1.18.0 or newer.
+const OpenCodeUserAgent = "opencode/latest/2.0.8/cli"
+
+// openCodeProject is a stable id for this process, sent as X-Opencode-Project.
+var openCodeProject = func() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}()
+
+// CodexCLIVersion is the Codex CLI version ccw presents; the backend hides
+// models that need a newer client.
+const CodexCLIVersion = "0.155.1"
+
+// Lookup returns the provider with this id.
+func Lookup(id string) (Provider, bool) {
+	if p, ok := registry[id]; ok {
+		return p, ok
+	}
+	if d, ok := Declared(id); ok {
+		return d.Provider(), true
+	}
+	return Provider{}, false
+}
+
+// Builtin reports whether id is a provider written in code.
+func Builtin(id string) bool {
+	_, ok := registry[id]
+	return ok
+}
+
+// IDs returns the registered provider ids in sorted order.
+func IDs() []string {
+	out := make([]string, 0, len(registry))
+	for id := range registry {
+		out = append(out, id)
+	}
+	out = append(out, DeclaredIDs()...)
+	sort.Strings(out)
+	return out
+}

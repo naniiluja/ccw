@@ -1,0 +1,128 @@
+package httpapi
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/naniiluja/ccw/internal/auth"
+	"github.com/naniiluja/ccw/internal/store"
+)
+
+func authConfig() *auth.Config {
+	return auth.NewConfig("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", "machine-tok", []byte("k"), 3600)
+}
+
+func TestBrowserRoutesRequireSession(t *testing.T) {
+	s, _ := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	defer s.Close()
+	h := NewWithAuth(s, nil, authConfig())
+
+	for _, path := range []string{"/accounts", "/usage"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+		if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/login" {
+			t.Errorf("%s without session: code=%d loc=%q, want 302 -> /login", path, rec.Code, rec.Header().Get("Location"))
+		}
+	}
+}
+
+func TestLoginWithCodeThenReachDashboard(t *testing.T) {
+	s, _ := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	defer s.Close()
+	cfg := authConfig()
+	h := NewWithAuth(s, nil, cfg)
+
+	form := url.Values{"totp": {auth.TOTPNow(cfg.TOTPSecret)}}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("login POST code=%d, want 302", rec.Code)
+	}
+	cookie := cookieNamed(rec, sessionCookie)
+	if cookie == nil {
+		t.Fatal("login set no session cookie")
+	}
+
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest("GET", "/accounts", nil)
+	req2.AddCookie(cookie)
+	h.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("with session /accounts code=%d, want 200", rec2.Code)
+	}
+}
+
+func TestLoginRejectsWrongCode(t *testing.T) {
+	s, _ := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	defer s.Close()
+	h := NewWithAuth(s, nil, authConfig())
+	form := url.Values{"totp": {"000000"}}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	h.ServeHTTP(rec, req)
+	if rec.Code == http.StatusFound || len(rec.Result().Cookies()) > 0 {
+		t.Error("wrong code produced a session")
+	}
+}
+
+func TestProxyRequiresBearerToken(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer up.Close()
+	s, _ := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	defer s.Close()
+	s.CreateConnection("groq", "x", "gsk")
+	h := NewWithAuth(s, map[string]string{"groq": up.URL}, authConfig())
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"groq/m"}`)))
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("no bearer: code=%d, want 401", rec.Code)
+	}
+
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"groq/m"}`))
+	req2.Header.Set("Authorization", "Bearer machine-tok")
+	h.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Errorf("with bearer: code=%d, want 200", rec2.Code)
+	}
+}
+
+// An Anthropic client sends its key as x-api-key. ccw accepts it as the API
+// token and never forwards it to the provider.
+func TestV1AcceptsXAPIKeyAndDoesNotForwardIt(t *testing.T) {
+	var gotKey, gotAuth string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotKey, gotAuth = r.Header.Get("X-Api-Key"), r.Header.Get("Authorization")
+		w.Write([]byte(`{}`))
+	}))
+	defer up.Close()
+	s, _ := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	defer s.Close()
+	s.CreateConnection("claude", "c", "oauth-tok")
+	cfg := authConfig()
+	h := NewWithAuth(s, map[string]string{"claude": up.URL}, cfg)
+
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"claude/claude-sonnet-5","max_tokens":1}`))
+	req.Header.Set("X-Api-Key", cfg.APIToken)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if gotKey != "" {
+		t.Errorf("x-api-key reached the provider: %q", gotKey)
+	}
+	if gotAuth != "Bearer oauth-tok" {
+		t.Errorf("provider auth = %q, want the stored credential", gotAuth)
+	}
+}
