@@ -1,7 +1,7 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { renderApp, useSession } from '@/test/render'
 import { server } from '@/test/server'
 
@@ -74,6 +74,17 @@ function mockQuota(opts: { view?: string } = {}) {
 }
 
 describe('quota page', () => {
+  it('scrolls to the account named by the URL hash', async () => {
+    useSession()
+    mockQuota()
+    const scroll = vi.spyOn(Element.prototype, 'scrollIntoView')
+    renderApp('/quota#account-c2')
+    await waitFor(() => expect(scroll).toHaveBeenCalled())
+    const target = scroll.mock.contexts.at(-1) as Element
+    expect(target.id).toBe('account-c2')
+    scroll.mockRestore()
+  })
+
   it('shows each window with percent, aria-valuenow and a warning', async () => {
     useSession()
     mockQuota()

@@ -116,7 +116,7 @@ export function ChangesTab({ filters }: { filters: Filters }) {
     ack.mutate(ids, {
       onSuccess: () => {
         setSelected(new Set())
-        setDetailId(null)
+        closeDetail()
       },
       onError: (e) =>
         toast.error('Không xác nhận được thay đổi', { description: e.message }),

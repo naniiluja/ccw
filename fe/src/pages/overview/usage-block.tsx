@@ -142,7 +142,7 @@ export function UsageBlock() {
           <TableBody>
             {days.map((d) => (
               <TableRow key={d.day}>
-                <TableCell>{d.day}</TableCell>
+                <TableHead scope="row">{d.day}</TableHead>
                 <TableCell>{formatNumber(d.inputTokens)}</TableCell>
                 <TableCell>{formatNumber(d.outputTokens)}</TableCell>
                 <TableCell>{formatNumber(d.requests)}</TableCell>
