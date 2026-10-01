@@ -24,10 +24,10 @@ Nguồn: `/Users/naniiluja/.claude/plans/chia-theo-fe-v-fizzy-oasis.md`. Mục t
 | # | Slice | Layers | Gate (tests green) | Depends on | Status |
 |---|-------|--------|--------------------|-----------|--------|
 | 032 | Tách repo: Go vào `be/`, script, CI và spec theo layout mới | repo layout + scripts + CI | `bash scripts/check.sh` xanh, 14 package, chỉ rename trong diff | — | in-review |
-| 033 | Package `webui` và route `/ui/` (SPA nhúng, `GET /` chuyển hướng) | BE webui + httpapi | `bash scripts/check.sh` xanh, ma trận contract của `Handler` | 032 | todo |
+| 033 | Package `webui` và route `/ui/` (SPA nhúng, `GET /` chuyển hướng) | BE webui + httpapi | `bash scripts/check.sh` xanh, ma trận contract của `Handler` | 032 | in-review |
 | 034 | Route session trả JSON khi `Accept: application/json`, thêm `GET /api/session` | BE auth + accounts | `bash scripts/check.sh` xanh, ma trận route session | 032 | todo |
 | 035 | `GET /api/settings` chỉ đọc, không lộ secret | BE httpapi | `bash scripts/check.sh` xanh, test không lộ secret | 032 | todo |
-| 036 | `fe/`: Vite, shadcn, Origin UI, shell, router 12 route, đăng nhập, theme, cổng FE trong CI | FE toolchain + shell + CI | `pnpm -C fe lint typecheck test build` xanh, `bash scripts/check.sh` xanh | 032 | todo |
+| 036 | `fe/`: Vite, shadcn, Origin UI, shell, router 12 route, đăng nhập, theme, cổng FE trong CI | FE toolchain + shell + CI | `pnpm -C fe lint typecheck test build` xanh, `bash scripts/check.sh` xanh | 032 | in-review |
 | 037 | Trang Tài khoản (thêm, OAuth, kiểm tra, xóa) | FE | cổng FE xanh, test MSW | 036 | todo |
 | 038 | Trang Provider và Model (định nghĩa, bảng model, xoay vòng, chính sách, Zen) | FE | cổng FE xanh, test MSW | 036 | todo |
 | 039 | Trang API key (khóa hiện một lần, giới hạn, usage) | FE | cổng FE xanh, test MSW | 036 | todo |
