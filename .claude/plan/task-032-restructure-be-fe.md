@@ -38,7 +38,7 @@ Toàn bộ mã Go chuyển vào `be/` (module và đường dẫn import không 
 - scripts/check.sh
 - scripts/npm-build.sh
 - .github/workflows/github-packages.yml
-- .gitignore
+- ./.gitignore
 - CLAUDE.md
 - .claude/rules/git-workflow.md
 - .claude/rules/tooling.md
