@@ -1,7 +1,7 @@
-# Task 002 — Đánh số phiên bản schema SQLite
+# Task 030 — Đánh số phiên bản schema SQLite
 
 - **Vertical slice:** store (schema + migration + test nâng cấp từ DB cũ)
-- **Depends on:** —
+- **Depends on:** 014
 - **Spec refs:** `.claude/rules/error-handling.md` (so sánh lỗi bằng `errors.Is`, không so chuỗi), `.claude/rules/architecture.md` (SQL chỉ trong `internal/store/`)
 - **MCP to use:** none
 - **Gate (must be GREEN before the next slice):** `go test ./internal/store/` xanh, trong đó có test mở một DB ở trạng thái cũ (chưa có `user_version`, đã có sẵn một số cột) và nâng lên phiên bản mới mà dữ liệu còn nguyên.
@@ -24,7 +24,7 @@
 ## Files to touch
 - `internal/store/store.go` — danh sách migration đánh số, chạy theo `user_version`, mỗi bước trong transaction.
 - `internal/store/models.go`, `errors.go`, `drift.go`, `oauth.go`, `apikey.go` — chuyển các `ALTER TABLE` nằm rải rác vào danh sách migration.
-- `internal/store/contract.go` — `MigrateContract` cũng dùng `strings.Contains(err.Error(), "duplicate column")`, nên phải được xử lý để tiêu chí grep rỗng đúng.
+- Không còn `internal/store/contract.go`: file đó (cùng `MigrateContract`) bị xóa ở task 014, nên task này chạy sau 014.
 - `internal/store/store_test.go` (hoặc file test mới cùng thư mục) — ba test trên.
 
 ## Steps (thin end-to-end slice)
@@ -37,4 +37,4 @@
 - SQLite: `PRAGMA user_version` dành cho ứng dụng theo dõi phiên bản schema, SQLite không tự dùng nó (https://www.sqlite.org/pragma.html#pragma_user_version). Context7 bị từ chối quyền trong phiên onboarding nên chưa có tài liệu riêng của `modernc.org/sqlite`; kiểm chứng lại khi thực hiện.
 - Không nối chuỗi tên cột vào SQL từ giá trị không phải hằng số.
 - Đọc lại vòng đời hiện tại ở `store.go:57-116` và các nơi `ALTER TABLE` trước khi gom; `drift.go` còn bước đánh dấu `legacy` cho path `{*}` cũ, phải giữ đúng hành vi.
-- Chỉ đụng `internal/store/`, không đụng `internal/httpapi/`, để task này chạy song song được với task 003.
+- Chỉ đụng `internal/store/`, không đụng `internal/httpapi/`, để task này chạy song song được với task 031.

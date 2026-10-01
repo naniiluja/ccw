@@ -16,7 +16,7 @@
 
 <!-- Keep the status guidance ABOVE this line, never below "## Origin": archive retirement groups content from one "## Origin" heading to the next, and only text before the FIRST heading is never cut into ARCHIVE.md. -->
 
-## Origin: Đóng các chỗ lệch best practice (onboarding)
+## Origin: Onboarding gaps and lean ccw
 
 Ba task không có liên kết dữ liệu và không chung file, nên `/ccf:cook` chạy được song song trong một wave.
 
@@ -24,26 +24,34 @@ Ba task không có liên kết dữ liệu và không chung file, nên `/ccf:coo
 | # | Slice | Layers | Gate (tests green) | Depends on | Status |
 |---|-------|--------|--------------------|-----------|--------|
 | 001 | CI chạy `go vet` và `go test -race` trước khi publish | CI workflow | `go vet ./...` và `go test ./...` xanh trên máy, workflow đọc đúng trình tự bằng test đọc YAML | — | todo |
-| 002 | Đánh số phiên bản schema bằng `PRAGMA user_version` thay cho nuốt lỗi `duplicate column` | store | `go test ./internal/store/` xanh, gồm test nâng cấp DB cũ | — | todo |
-| 003 | `log/slog` có request ID xuyên suốt `/v1` và `IdleTimeout` cho server | httpapi + cmd | `go test ./internal/httpapi/ ./cmd/ccw/` xanh, test khẳng định dòng log mang `req_id` | — | todo |
 
-## Origin: Tổ chức lại cấu trúc backend
+Hai task còn lại của đợt onboarding (đánh số lại thành 030 và 031) nằm cuối bảng bên dưới, vì chúng phải chạy sau các task xóa, gộp và tách.
 
-Nguồn: `/Users/naniiluja/.claude/plans/optimized-giggling-gizmo.md`. Mục tiêu: chia `internal/httpapi` (49 file, 13.5k dòng, struct `api` 26 field) thành các package theo miền, hành vi giữ nguyên. Bước 0 (người dùng): commit nền sạch trước khi task đầu tiên chạy. Các task 004 đến 013 chạy song song với 001 đến 003 theo quyết định của người dùng; `/ccf:cook` tự xếp khác wave những cặp chung file (`v1.go`, `proxy.go`, `server.go`, `notify.go`, `store/contract.go`). Kỷ luật test mức contract: bật.
+## Origin: Tinh gọn source ccw
 
-## Task backlog: tổ chức lại backend (in execution order)
+Nguồn: `/Users/naniiluja/.claude/plans/optimized-giggling-gizmo.md`. Mục tiêu: giảm số file và độ phức tạp, xóa tính năng không cần, đổi đăng nhập sang mật khẩu, và ép bộ luật mới bằng CI. Không tạo package hay interface mới. Thay thế kế hoạch chia package trước đó (task 004 đến 013 cũ nằm ở `.claude/plan/archive/`, bị thay thế, không phải đã xong). Kỷ luật test mức contract: bật cho 018, 023, 024; tắt cho các task chỉ xóa hoặc gộp file.
+
+## Task backlog: tinh gọn source (in execution order)
 | # | Slice | Layers | Gate (tests green) | Depends on | Status |
 |---|-------|--------|--------------------|-----------|--------|
-| 004 | Gom helper HTTP dùng chung vào `httpx.go`, thêm test kiến trúc và test `mcpAdminTools` | httpapi + cmd + spec | `gofmt`, `go vet`, `go test -race ./...` xanh, test không package nào ngoài `httpapi` import `httpapi` | — | todo |
-| 005 | Tách `store/contract.go` theo miền | store | `go test -race ./internal/store/` xanh, `contract_test.go` giữ nguyên | — | todo |
-| 006 | `loginguard` sang `internal/auth` | auth + httpapi | `go test -race ./...` xanh, ma trận BVA ngưỡng đăng nhập | 004 | todo |
-| 007 | `ranking` sang `internal/ranking` | ranking + httpapi | `go test -race ./...` xanh, ma trận `arenaNorm` | 004 | todo |
-| 008 | `notify` sang `internal/notify` | notify + httpapi | `go test -race ./...` xanh, ma trận SSRF | 004 | todo |
-| 009 | `quota` sang `internal/quota` bằng interface `TokenSource` | quota + httpapi | `go test -race ./...` xanh, 5 file test quota đã chuyển | 004, 006 | todo |
-| 010 | `review` sang `internal/review` bằng `Asker`/`Sender` | review + httpapi | `go test -race ./...` xanh, test review dùng fake | 004, 008 | todo |
-| 011 | Tách `failover` trong `v1.go` thành các bước nhỏ | httpapi (refactor) | `go test -race -count=3 ./internal/httpapi/` xanh, golden Zen không đổi | 004 | todo |
-| 012 | Lõi `/v1` sang `internal/proxy` | proxy + httpapi | `go test -race ./...` xanh, auth tier và golden Zen giữ nguyên | 009, 010, 011 | todo |
-| 013 | Đồng bộ spec sau khi tách backend | spec | `CLAUDE.md` dưới 200 dòng và 12KB, chỉ `cmd/ccw` import `httpapi` trong `go list -deps` | 012 | todo |
+| 014 | Xóa contract lab và mọi thứ liên quan đến switcher (kèm cờ `trusted` của API key) | store + contract + httpapi + cmd + docs | `grep` switcher và contract lab rỗng; test hiện có xanh | — | todo |
+| 015 | Xóa notify (Telegram, webhook) | store + httpapi | `grep` telegram và webhook rỗng; test review và OAuth xanh | 014 | todo |
+| 016 | Xóa ranking (bảng xếp hạng model) | httpapi | `grep` arena và ranking rỗng; `/v1/models` đủ trường cũ | 015 | todo |
+| 017 | Dọn code chết và lint (`provider.Generic`, `zen.SystemOneNames`, hai cảnh báo test) | provider + zen + httpapi | `staticcheck` xanh, `deadcode` rỗng | 014 | todo |
+| 018 | Đăng nhập bằng mật khẩu thay TOTP (`CCW_PASSWORD`, tự sinh lần đầu, `-reset-password`) | auth + cmd + httpapi | ma trận `CheckPassword`, DB chỉ chứa bản băm, 401 và 429 đúng | 014 | todo |
+| 019 | Chuyển loginguard vào `internal/auth` | auth + httpapi | test loginguard xanh ở `auth`, ngưỡng không đổi | 018 | todo |
+| 020 | Gộp file httpapi nhóm A (server, auth, oauth, tài khoản, key, filter) | httpapi | `go test -race ./...` xanh, một `// Package httpapi` | 016, 019 | todo |
+| 021 | Gộp file httpapi nhóm B (model, proxy, provider adapter, web search) | httpapi | `go test -race ./...` xanh, file dưới 1000 dòng | 020 | todo |
+| 022 | Gộp quota, drift và heal | httpapi + translate | `go test -race ./...` xanh | 021 | todo |
+| 023 | Tách `failover`, `v1`, `relayVia` thành các bước tên rõ | httpapi (refactor) | `go test -race -count=3` xanh, golden Zen không đổi, gocyclo dưới hoặc bằng 30 | 021 | todo |
+| 024 | Tách `claimReset`, `claudeResetRows`, `quotaFor`, `newServer` | httpapi (refactor) | `go test -race ./...` xanh, gocyclo dưới hoặc bằng 30 | 022 | todo |
+| 025 | Tách translate phía request | translate | `go test -race ./internal/translate/` xanh | 022 | todo |
+| 026 | Tách translate phía response và stream | translate | `go test -race` xanh, golden Zen không đổi | 025 | todo |
+| 027 | Tách các hàm còn vượt 30 | httpapi + provider | `gocyclo -over 30` rỗng | 023, 024, 026 | todo |
+| 028 | Ép luật bằng công cụ trong CI và `scripts/check.sh` | CI + config + test kiến trúc | `scripts/check.sh` xanh, cố ý vi phạm làm đúng cổng đỏ | 001, 027 | todo |
+| 029 | Bộ luật mới và đồng bộ spec | spec | `CLAUDE.md` dưới 200 dòng và 12KB, mỗi luật ghi cách kiểm | 028 | todo |
+| 030 | Đánh số phiên bản schema bằng `PRAGMA user_version` thay cho nuốt lỗi `duplicate column` (cũ là task 002) | store | `go test ./internal/store/` xanh, gồm test nâng cấp DB cũ | 014 | todo |
+| 031 | `log/slog` có request ID xuyên suốt `/v1` và `IdleTimeout` cho server (cũ là task 003) | httpapi + cmd | `go test ./internal/httpapi/ ./cmd/ccw/` xanh, test khẳng định dòng log mang `req_id` | 027, 019 | todo |
 
 ## Ngoài plan
 - `README.md`, `SECURITY.md`, `docs/*.md` đã bị xóa có chủ đích; các test và bước đóng gói npm phụ thuộc vào chúng đã được gỡ, `go test ./...` xanh.

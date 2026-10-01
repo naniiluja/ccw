@@ -8,7 +8,7 @@
 ## Verifiable rules
 - **No silent catch.** A caught error must be logged (with the request ID) or returned with context.
 - Wrap errors with context when crossing a boundary using `fmt.Errorf("...: %w", err)`; don't swallow the original cause. Hiện 115 trên 175 `fmt.Errorf` dùng `%w`, code mới phải dùng `%w`.
-- So sánh lỗi bằng `errors.Is`/`errors.As`. Không dùng `strings.Contains(err.Error(), ...)` cho luồng điều khiển mới (chỗ đang có: migration `"duplicate column"` trong `internal/store`, sửa ở `task-002`).
+- So sánh lỗi bằng `errors.Is`/`errors.As`. Không dùng `strings.Contains(err.Error(), ...)` cho luồng điều khiển mới (chỗ đang có: migration `"duplicate column"` trong `internal/store`, sửa ở `task-030`).
 - Retry only transient errors (429, 500, 503, timeout) with backoff; never retry business errors. Client upstream nằm ở `internal/upstream/client.go`; OAuth 401 được refresh và thử lại đúng một lần.
 - Không `panic` trong đường xử lý request. `log.Fatal` chỉ dùng ở khởi động trong `cmd/ccw`.
 

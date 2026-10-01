@@ -1,7 +1,7 @@
-# Task 003 — slog với request ID và IdleTimeout
+# Task 031 — slog với request ID và IdleTimeout
 
 - **Vertical slice:** cmd (khởi tạo logger, server timeout) + httpapi (middleware, proxy, log call sites)
-- **Depends on:** —
+- **Depends on:** 027, 019
 - **Spec refs:** `.claude/rules/logging.md`, `.claude/rules/error-handling.md`, `.claude/rules/architecture.md` (route `/v1` đi qua `v1API`)
 - **MCP to use:** none
 - **Gate (must be GREEN before the next slice):** `go test ./internal/httpapi/ ./cmd/ccw/` xanh; có test khẳng định một request `/v1` sinh ra dòng log mang đúng `req_id` bằng với header `Request-Id` trả về.
@@ -23,10 +23,11 @@ Mọi dòng log phát sinh trong một request `/v1` mang `req_id` trùng với 
 - `TestServerHasIdleTimeout`: đọc cấu hình server dựng bởi hàm khởi tạo (tách hàm dựng `http.Server` ra khỏi `main` nếu cần) và khẳng định `IdleTimeout > 0` và `WriteTimeout == 0`.
 
 ## Files to touch
-- `internal/httpapi/apierror.go` — `v1API` đặt request ID vào context, hàm lấy logger từ context.
-- `internal/httpapi/v1.go`, `proxy.go`, `server.go`, `notify.go` và các file khác còn `log.Printf` — chuyển sang `slog`.
+- `internal/httpapi/server.go` — `v1API` đặt request ID vào context, hàm lấy logger từ context (sau task 020, `apierror.go` đã gộp vào `server.go`).
+- `internal/httpapi/v1.go`, `internal/httpapi/proxy.go`, `internal/httpapi/providers.go`, `internal/httpapi/oauth.go`, `internal/httpapi/websearch.go` và các file khác còn `log.Printf` (tên file là tên sau các task gộp 020 đến 022) — chuyển sang `slog`.
 - `cmd/ccw/main.go` — khởi tạo logger mặc định (đề xuất `slog.NewJSONHandler` ra stderr) và thêm `IdleTimeout`.
-- `internal/httpapi/*_test.go`, `cmd/ccw/main_test.go` — ba test trên.
+- `internal/httpapi/v1_test.go`, `cmd/ccw/main_test.go` — ba test trên.
+- Task chạy SAU các task xóa, gộp và tách (027) để lời gọi `slog` nằm đúng cấu trúc cuối; `notify.go` đã bị xóa ở task 015.
 
 ## Steps (thin end-to-end slice)
 1. Write the failing test (cover the slice's user-visible behavior, not just one layer)
@@ -37,5 +38,5 @@ Mọi dòng log phát sinh trong một request `/v1` mang `req_id` trùng với 
 ## Notes / best-practice sources
 - `log/slog`: https://go.dev/blog/slog (handler JSON cho production, `InfoContext`/`ErrorContext` hoặc `logger.With("req_id", id)`). Redact secret bằng `slog.LogValuer` hoặc `ReplaceAttr`; phần redact chưa được kiểm chứng bằng tài liệu, tự xác nhận khi làm.
 - Timeout cho stream: chỉ đặt `ReadHeaderTimeout` và `IdleTimeout`, không đặt `WriteTimeout` toàn cục; repo đã dùng `http.NewResponseController` ở `shapes.go`, `proxy.go`, `echo.go` và `ReadHeaderTimeout: 10s` ở `cmd/ccw/main.go:106`. Nguồn: https://pkg.go.dev/net/http (phần `ResponseController`), phần trường timeout của `Server` chưa được fetch.
-- Không chạm `internal/store/` để không xung đột với task 002; `store` hiện không gọi `log`.
+- Không chạm `internal/store/` để không xung đột với task 030; `store` hiện không gọi `log`.
 - Lưu ý tách nhỏ commit nếu diff lớn: đổi tên logger ở 40 chỗ là cơ học, đổi hành vi (`IdleTimeout`, request ID trong context) là phần cần review kỹ.

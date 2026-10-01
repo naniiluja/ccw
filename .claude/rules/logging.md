@@ -5,13 +5,13 @@ Goal: log structured enough that Claude can grep the **full trace** of a request
 ## Hiện trạng (đã đo bằng grep)
 - Chỉ dùng `log` stdlib: 40 chỗ `log.Printf`, 6 chỗ `log.Fatal`/`log.Fatalf` (ở `cmd/ccw`). Không có `log/slog`, không có JSON.
 - Mỗi lời gọi `/v1` đã có request ID dạng `req_<hex>` (`v1API` trong `internal/httpapi/apierror.go`), gắn vào header `Request-Id` và `X-Request-Id`, nhưng ID này **chưa vào dòng log nào**. Chỉ 3 dòng `log.Printf` nhắc tới request.
-- Lệch so với best practice: `go.dev/blog/slog` khuyên `log/slog` có cấu trúc, mang request ID theo context. Việc chuyển đổi nằm ở `task-003`.
+- Lệch so với best practice: `go.dev/blog/slog` khuyên `log/slog` có cấu trúc, mang request ID theo context. Việc chuyển đổi nằm ở `task-031`.
 
 ## Required (áp dụng cho code mới)
 - Code mới ghi log bằng `log/slog` với key/value, không nối chuỗi thủ công.
 - Gắn request ID vào mọi dòng log của cùng một request; sinh ở `v1API`, truyền qua `context`.
 - Each **cross-boundary call** (gọi upstream, chạm DB chậm) logs both entry and exit with the request ID + timing.
-- Event-name prefix: `<miền>.<hành động>` (ví dụ `proxy.upstream.retry`, `oauth.refresh.fail`). Code cũ dùng `log.Printf("models %s: %v", ...)` giữ nguyên tới khi `task-003` chuyển.
+- Event-name prefix: `<miền>.<hành động>` (ví dụ `proxy.upstream.retry`, `oauth.refresh.fail`). Code cũ dùng `log.Printf("models %s: %v", ...)` giữ nguyên tới khi `task-031` chuyển.
 
 ## Log levels
 - `error`: needs attention. `warn`: abnormal but handled. `info`: business milestones. `debug`: development detail.
