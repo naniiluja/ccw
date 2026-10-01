@@ -13,12 +13,13 @@ Kèm theo: đăng nhập dashboard bằng **mật khẩu** (`CCW_PASSWORD` tối
 Đã gỡ khỏi source (đừng tìm, đừng khôi phục): contract lab và switcher (`internal/contract`, `X-Ccw-Trace`, `contract-reset`), notify (Telegram, webhook), ranking (`CCW_ARENA_URL`), đăng nhập TOTP, cờ `trusted` của API key.
 
 ## Repo layout
-Một module Go (`github.com/naniiluja/ccw`), 14 package, 72 file `.go` không test (khoảng 22.3k dòng). Git ở root.
+Repo chia hai phần: `be/` giữ module Go (`github.com/naniiluja/ccw`, `be/go.mod`, `be/go.sum`, `be/staticcheck.conf`), 14 package, 72 file `.go` không test (khoảng 22.3k dòng); `fe/` dành cho dashboard viết lại (chưa có). Git ở root; gốc giữ `CLAUDE.md`, `.claude/`, `.github/`, `scripts/`, `npm/`, `docs/`, `LICENSE`.
+Các đường dẫn trong `.claude/rules/*` tính từ `be/` trừ khi có tiền tố `fe/`, `scripts/`, `npm/`, `.github/` hoặc `.claude/`.
 - `cmd/ccw/`: entrypoint, flag, mật khẩu lần đầu, `http.Server` (`IdleTimeout`), test bảo vệ bản phát hành.
 - `internal/httpapi/` (21 file): route, middleware auth, `/v1` và failover, proxy, rotation, `/api/*`, `/mcp`, quota, drift, errors. Bản đồ file ở `architecture.md`. Chỉ `cmd/ccw` được import nó.
 - `internal/translate/`: dịch request/response giữa các shape. `internal/store/`: SQLite, mọi SQL, schema đánh số bằng `PRAGMA user_version`.
 - `internal/auth/` (mật khẩu, session, `LoginGuard`), `provider/`, `filter/`, `drift/`, `oauth/`, `upstream/`, `usage/`, `servertools/`, `websearch/`, `zen/`: xem `architecture.md`.
-- `scripts/check.sh`: mọi cổng (gofmt, vet, staticcheck, gocyclo, `go test -race`), CI chạy y hệt. `staticcheck.conf`: bộ check.
+- `scripts/check.sh`: mọi cổng (gofmt, vet, staticcheck, gocyclo, `go test -race`), CI chạy y hệt; cổng Go chạy trong `be/`, cổng FE chỉ chạy khi có `fe/package.json`. `be/staticcheck.conf`: bộ check.
 - `npm/ccw-gateway/`, `scripts/npm-build.sh`: đóng gói npm đa nền tảng.
 
 ## Rules (imported, chi tiết ở .claude/rules/)

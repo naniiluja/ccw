@@ -24,8 +24,8 @@ Mọi subagent CCF **chỉ đọc**: khám phá, review, tìm best practice, kh�
 
 ## Lệnh thường dùng
 - Kiểm toàn bộ trước commit: `bash scripts/check.sh` (gofmt, go vet, staticcheck, gocyclo, `go test -race ./...` gồm test kiến trúc). Giống hệt CI. Lần đầu tải staticcheck, gocyclo và toolchain `go1.27.1` qua `go run`, nên cần mạng.
-- Build: `go build ./...`. Chạy cục bộ: `go run ./cmd/ccw -addr 127.0.0.1:20130 -db ccw.db`. Lần chạy đầu in mật khẩu dashboard **một lần** ra stderr (lưu ngay vào trình quản lý mật khẩu); hoặc đặt `CCW_PASSWORD` (tối thiểu 12 ký tự). Quên mật khẩu: `go run ./cmd/ccw -db ccw.db -reset-password`. Thử nghiệm dùng DB tạm (`-db /tmp/ccw-check.db`), không dùng DB thật.
-- Đo nhanh: `find internal cmd -name '*.go' -not -name '*_test.go' | wc -l` (72), `find internal/httpapi -maxdepth 1 -name '*.go' -not -name '*_test.go' | wc -l` (21), `go run golang.org/x/tools/cmd/deadcode@latest -test ./...` khi dọn code chết.
+- Build: `cd be && go build ./...`. Chạy cục bộ: `cd be && go run ./cmd/ccw -addr 127.0.0.1:20130 -db ccw.db`. Lần chạy đầu in mật khẩu dashboard **một lần** ra stderr (lưu ngay vào trình quản lý mật khẩu); hoặc đặt `CCW_PASSWORD` (tối thiểu 12 ký tự). Quên mật khẩu: `cd be && go run ./cmd/ccw -db ccw.db -reset-password`. Thử nghiệm dùng DB tạm (`-db /tmp/ccw-check.db`), không dùng DB thật.
+- Đo nhanh (trong `be/`): `find internal cmd -name '*.go' -not -name '*_test.go' | wc -l` (72), `find internal/httpapi -maxdepth 1 -name '*.go' -not -name '*_test.go' | wc -l` (21), `go run golang.org/x/tools/cmd/deadcode@latest -test ./...` khi dọn code chết.
 - Build npm đa nền tảng: `scripts/npm-build.sh` (cần `NPM_SCOPE` khi publish). Không publish thủ công; release đi qua tag `v*`.
 
 ## System memory vs Spec (ghi ở đâu)

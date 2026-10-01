@@ -9,11 +9,32 @@ import (
 	"testing"
 )
 
+// repoRoot returns the repository root: the nearest directory above the
+// working directory that holds CLAUDE.md. The Go module lives in be/, so the
+// root is no longer a fixed number of levels above this package.
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("working directory: %v", err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "CLAUDE.md")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("found no CLAUDE.md above the working directory")
+		}
+		dir = parent
+	}
+}
+
 // repoFile reads a file at the repository root. The tests of this file guard the
 // files a public release needs, so they must read the real tree, not a fixture.
 func repoFile(t *testing.T, name string) string {
 	t.Helper()
-	b, err := os.ReadFile(filepath.Join("..", "..", name))
+	b, err := os.ReadFile(filepath.Join(repoRoot(t), name))
 	if err != nil {
 		t.Fatalf("read %s: %v", name, err)
 	}
@@ -64,7 +85,7 @@ func TestCommentsShowNoSamplePassword(t *testing.T) {
 // files, otherwise only the others.
 func repoGoFiles(t *testing.T, tests bool) []string {
 	t.Helper()
-	root := filepath.Join("..", "..")
+	root := repoRoot(t)
 	var names []string
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -126,7 +147,7 @@ func TestReleaseWorkflowGatesPublishOnTests(t *testing.T) {
 	if test == "" {
 		t.Fatal("workflow has no test job")
 	}
-	for _, want := range []string{"go-version-file: go.mod", "scripts/check.sh"} {
+	for _, want := range []string{"go-version-file: be/go.mod", "scripts/check.sh"} {
 		if !strings.Contains(test, want) {
 			t.Errorf("test job misses %q", want)
 		}
@@ -146,6 +167,20 @@ func TestReleaseWorkflowGatesPublishOnTests(t *testing.T) {
 	}
 	if !strings.Contains(publish, "startsWith(github.ref, 'refs/tags/v')") {
 		t.Error("publish job is not limited to v* tags")
+	}
+}
+
+// TestGoModuleLivesInBe keeps the Go module in be/ beside the frontend in
+// fe/: the root holds only the shared files, never a second go.mod.
+func TestGoModuleLivesInBe(t *testing.T) {
+	root := repoRoot(t)
+	if _, err := os.Stat(filepath.Join(root, "be", "go.mod")); err != nil {
+		t.Errorf("be/go.mod: %v", err)
+	}
+	for _, name := range []string{"go.mod", "cmd", "internal"} {
+		if _, err := os.Stat(filepath.Join(root, name)); err == nil {
+			t.Errorf("the repository root still holds %s", name)
+		}
 	}
 }
 
