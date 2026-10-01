@@ -1,3 +1,26 @@
+## Origin: Dashboard ccw, tách be/ và fe/
+
+Nguồn: `/Users/naniiluja/.claude/plans/chia-theo-fe-v-fizzy-oasis.md`. Mục tiêu: Go vào `be/`, giao diện vào `fe/`, SPA phục vụ dưới `/ui/` và nhúng vào binary. Kỷ luật test mức contract: bật cho 033, 034, 035; tắt cho các task còn lại. Task 032 chạy một mình (chạm mọi đường dẫn). 033 và 036 chạy cùng wave vì `be/` và `fe/` rời nhau. Ba task BE (033, 034, 035) cùng chạm `be/internal/httpapi/server.go` nên khác wave. Các trang FE 037 đến 043 và 045 chạy song song sau 036, 044 chạy sau 040, 041, 042 để dùng chung hook.
+
+## Task backlog: dashboard (in execution order)
+| # | Slice | Layers | Gate (tests green) | Depends on | Status |
+|---|-------|--------|--------------------|-----------|--------|
+| 032 | Tách repo: Go vào `be/`, script, CI và spec theo layout mới | repo layout + scripts + CI | `bash scripts/check.sh` xanh, 14 package, chỉ rename trong diff | — | done |
+| 033 | Package `webui` và route `/ui/` (SPA nhúng, `GET /` chuyển hướng) | BE webui + httpapi | `bash scripts/check.sh` xanh, ma trận contract của `Handler` | 032 | done |
+| 034 | Route session trả JSON khi `Accept: application/json`, thêm `GET /api/session` | BE auth + accounts | `bash scripts/check.sh` xanh, ma trận route session | 032 | done |
+| 035 | `GET /api/settings` chỉ đọc, không lộ secret | BE httpapi | `bash scripts/check.sh` xanh, test không lộ secret | 032 | done |
+| 036 | `fe/`: Vite, shadcn, Origin UI, shell, router 12 route, đăng nhập, theme, cổng FE trong CI | FE toolchain + shell + CI | `pnpm -C fe lint typecheck test build` xanh, `bash scripts/check.sh` xanh | 032 | done |
+| 037 | Trang Tài khoản (thêm, OAuth, kiểm tra, xóa) | FE | cổng FE xanh, test MSW | 036 | done |
+| 038 | Trang Provider và Model (định nghĩa, bảng model, xoay vòng, chính sách, Zen) | FE | cổng FE xanh, test MSW | 036 | done |
+| 039 | Trang API key (khóa hiện một lần, giới hạn, usage) | FE | cổng FE xanh, test MSW | 036 | done |
+| 040 | Trang Quota và Usage (đồng hồ, claim reset, biểu đồ) | FE | cổng FE xanh, test MSW | 036 | done |
+| 041 | Trang Lỗi upstream (lọc, chi tiết, AI error review) | FE | cổng FE xanh, test MSW | 036 | done |
+| 042 | Trang Drift (thay đổi shape, ack, AI drift review) | FE | cổng FE xanh, test MSW | 036 | done |
+| 043 | Trang Bộ lọc (blacklist field) | FE | cổng FE xanh, test MSW | 036 | done |
+| 044 | Trang Tổng quan (gộp từ các hook đã có) | FE | cổng FE xanh, test MSW | 036, 040, 041, 042 | done |
+| 045 | Trang Cài đặt chỉ đọc và thông tin kết nối | FE | cổng FE xanh, test MSW | 036 | done |
+| 046 | Đóng gói SPA vào binary và npm, đồng bộ spec, kiểm đầu cuối bằng trình duyệt | build + CI + spec + e2e | `bash scripts/ui-build.sh && bash scripts/check.sh` xanh, kiểm bằng Claude in Chrome | 033, 034, 035, 036, 037, 038, 039, 040, 041, 042, 043, 044, 045 | done |
+
 ## Origin: Onboarding gaps and lean ccw
 
 Ba task không có liên kết dữ liệu và không chung file, nên `/ccf:cook` chạy được song song trong một wave.

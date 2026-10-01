@@ -38,11 +38,11 @@ Các đường dẫn trong `.claude/rules/*` tính từ `be/` trừ khi có ti�
 @.claude/rules/git-workflow.md
 
 ## Current plan
-Iteration tinh gọn ccw (19 task) đã `done`, lưu ở `.claude/plan/ARCHIVE.md` (task file ở `.claude/plan/archive/`; không xóa). Iteration dashboard (be và fe, task 032 đến 046) đang `in-review`: xem `.claude/plan/PLAN.md`; kế hoạch mới đi qua `/ccf:plan`, chạy bằng `/ccf:cook`.
+Không có iteration nào đang chạy: `.claude/plan/PLAN.md` trống. Iteration tinh gọn ccw (19 task) và iteration dashboard (be và fe, task 032 đến 046) đều `done`, lưu ở `.claude/plan/ARCHIVE.md` (task file ở `.claude/plan/archive/`; không xóa). Kế hoạch mới đi qua `/ccf:plan`, chạy bằng `/ccf:cook`.
 Việc còn mở (đều là `WARN:`, chưa thành task):
 - `internal/httpapi/proxy.go` bỏ qua lỗi của `copyFlushing` mà không log; comment cũ ở `internal/auth/config.go`.
 - `-reset-password` chưa thu hồi session đang sống.
 - Ngoài phạm vi của dashboard: sửa web search, múi giờ và đổi mật khẩu từ UI (trang Settings chỉ đọc, `GET /api/settings`); cập nhật `openapi.json` cho `/api/*`; cookie session luôn `Secure: true` (`internal/httpapi/auth.go`), nên đổi sang theo `requestIsTLS` như cookie thiết bị.
 - `GET /api/settings` không bao giờ báo `authMode: "token"` (chỉ `password` hoặc `none`, `settings.go`).
-- Một lỗi chập chờn của `go test -race ./internal/httpapi` chỉ thấy ở lần chạy đầu trong script tích hợp wave (chạy lại thì qua, chưa ghi được tên test); một lỗi chập chờn ở `fe/src/pages/keys/keys.test.tsx`.
-- Bộ chọn loại tài khoản ở trang Accounts dựng từ primitive `RadioGroup`, chưa phải `@originui/comp-163`.
+- Lỗi chập chờn chưa bắt được tên: `go test -race ./internal/httpapi` đỏ thỉnh thoảng ở lần chạy đầu của `scripts/check.sh` hoặc script tích hợp wave (chạy lại xanh, 3 lần liên tiếp không tái hiện); thỉnh thoảng một test FE ở `fe/src/pages/keys/keys.test.tsx` hoặc `fe/src/pages/drift/drift.test.tsx` đỏ.
+- Dashboard: bộ chọn loại tài khoản dựng từ `RadioGroup`, chưa phải `@originui/comp-163`; ví dụ Codex và OpenAI ở trang Settings chưa lấy từ `docs/clients.md`; lỗi tiếng Anh của server hiện nguyên văn; chi tiết lỗi upstream không có "số lần thử" (backend ghi mỗi lần thử một dòng); các form đơn giản chưa dùng zod (danh sách ngoại lệ ở `frontend.md`).

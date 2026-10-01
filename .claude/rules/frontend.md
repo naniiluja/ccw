@@ -21,6 +21,6 @@ Dashboard là SPA React trong `fe/`, build ra `fe/dist`, được `scripts/ui-bu
 
 ## Test (biên giới đang có)
 - Vitest với jsdom, Testing Library và MSW (`fe/src/test/server.ts`, `render.tsx`); test kiểm hành vi người dùng thấy, chạy không cần mạng hay backend thật. `[tool]` `pnpm -C fe test`.
-- Mỗi trang có một tệp test cạnh nó (13 tệp test hiện nay), cộng `app.test.tsx`, `routes.test.ts` và `ui-boundary.test.ts`. Một test của `fe/src/pages/keys/keys.test.tsx` thỉnh thoảng đỏ (chập chờn, xem `CLAUDE.md`); chạy lại một lần trước khi kết luận. `[review]`
+- Mỗi trang có một tệp test cạnh nó (13 tệp test hiện nay), cộng `app.test.tsx`, `routes.test.ts` và `ui-boundary.test.ts`. Một test của `fe/src/pages/keys/keys.test.tsx` hay `fe/src/pages/drift/drift.test.tsx` thỉnh thoảng đỏ (chập chờn, xem `CLAUDE.md`); chạy lại một lần trước khi kết luận. `[review]`
 - Kiểm đầu cuối trên binary thật bằng trình duyệt là bước tay, không có test tự động. `[review]`
 - Bản build nhúng (`be/internal/webui/static/`) không bao giờ được commit. `[review]` `git status --short` không được liệt kê tệp trong `static/` ngoài `.gitkeep`.

@@ -14,7 +14,7 @@ Philosophy: **viết test đỏ TRƯỚC** khi cài đặt hoặc sửa, vì đ�
 - CI (`.github/workflows/github-packages.yml`): job `test` chạy `bash scripts/check.sh` trên mỗi push vào `master`, mỗi pull request và mỗi tag; job `frontend` chạy `pnpm install --frozen-lockfile`, `lint`, `typecheck`, `test`, `build` trong `fe/`; job `publish` có `needs: [test, frontend]`, cài pnpm và Node trước bước Build, và chỉ chạy với tag `v*` hoặc chạy tay. `[tool]` `TestReleaseWorkflowGatesPublishOnTests` giữ ràng buộc này (chấp nhận `needs` dạng đơn hoặc danh sách), `TestPublishBuildsTheUIBeforeTheBinaries` giữ thứ tự Node, pnpm rồi `ui-build.sh` rồi `go build`.
 
 ## Cổng frontend (`fe/`)
-- `bash scripts/check.sh` chạy thêm, khi có `fe/package.json`: `pnpm install --frozen-lockfile`, `pnpm lint` (oxlint `--deny-warnings`), `pnpm typecheck` (`tsc -b`), `pnpm test` (Vitest, 13 file test), `pnpm build`. `[tool]`
+- `bash scripts/check.sh` chạy thêm, khi có `fe/package.json`: `pnpm install --frozen-lockfile`, `pnpm lint` (oxlint `--deny-warnings`), `pnpm typecheck` (`tsc -b`), `pnpm test` (Vitest, 13 file test, 128 test), `pnpm build`. `[tool]`
 - Test FE dùng Vitest, jsdom, Testing Library và MSW (`fe/src/test/server.ts`); không gọi mạng thật. `fe/src/components/ui-boundary.test.ts` chặn import Radix hoặc Base UI ngoài `components/ui`. Test kiểm hành vi người dùng thấy, không kiểm chi tiết cài đặt. `[tool]`
 - `be/internal/webui/webui_test.go` đọc `static/index.html` thật khi đã build (bỏ qua có chú thích khi chưa chạy `ui-build.sh`) và khẳng định `/ui/` trả `200` kèm `<div id="root">`. `[tool]`
 - Kiểm đầu cuối trên binary thật bằng trình duyệt là bước tay của task, không nằm trong cổng.
