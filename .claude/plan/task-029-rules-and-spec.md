@@ -22,6 +22,7 @@ Viết bộ luật đặt tên, convention và design pattern mới theo best pr
 - Không có test mới; gate là các lệnh đo: `wc -lc CLAUDE.md`, `go list -deps ./internal/... | grep internal/httpapi` chỉ ra `cmd/ccw`, `ls internal/httpapi/*.go | grep -vc _test`.
 
 ## Files to touch
+- .claude/rules/debugging.md, .claude/rules/git-workflow.md — bỏ nhắc tính năng đã xóa, cập nhật Known bugs
 - CLAUDE.md
 - .claude/rules/naming.md
 - .claude/rules/coding-conventions.md
