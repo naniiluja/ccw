@@ -21,6 +21,10 @@ Biến bộ luật mới thành các cổng tự động để vibe code không 
 - Cố ý thêm một hàm cyclomatic 31 để xác nhận `gocyclo` đỏ, rồi gỡ.
 
 ## Files to touch
+- cmd/ccw/release_test.go — test cổng publish đọc `scripts/check.sh` thay cho hai bước riêng (buộc)
+- internal/httpapi/providers_test.go — đổi field `Id` thành `ID` (ST1003)
+- internal/auth/config_test.go — sửa SA4000 `X || X`
+- internal/httpapi/arch_test.go, staticcheck.conf, scripts/check.sh — mới
 - .github/workflows/github-packages.yml
 - staticcheck.conf
 - scripts/check.sh
