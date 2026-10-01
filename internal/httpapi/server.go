@@ -49,7 +49,7 @@ type api struct {
 	// errReview is the error review's state.
 	errReview reviewState
 	// login caps failed sign-in attempts so the password cannot be brute forced.
-	login *loginGuard
+	login *auth.LoginGuard
 	// refresh serializes OAuth token refreshes per connection.
 	refresh refreshLocks
 	// claimLocks serializes manual quota reset claims per connection.
@@ -83,7 +83,7 @@ func newServer(s *store.Store, baseOverride map[string]string, authCfg *auth.Con
 		copilot: copilotCache{m: map[string]copilotToken{}},
 		sigs:    sigStore{m: map[string]sigEntry{}}, drift: drift.New(s),
 		rate: rateHeaders{m: map[string]rateSnapshot{}}, quota: quotaCache{m: map[string]AccountQuota{}, highWater: map[string]uint64{}, flights: map[string]*quotaFlight{}},
-		auto: autoState{running: map[string]*autoRun{}}, login: newLoginGuard(),
+		auto: autoState{running: map[string]*autoRun{}}, login: auth.NewLoginGuard(),
 		claims: claimTables{unknown: map[string]claimUnknownEntry{}, hold: map[string]claimHoldEntry{}, done: map[string]claimDoneEntry{}},
 		zen:    newZenState(),
 	}

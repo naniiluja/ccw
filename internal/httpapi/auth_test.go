@@ -102,20 +102,20 @@ func TestLoginIgnoresTheOldCodeField(t *testing.T) {
 	}
 }
 
-// After loginPerIPMax wrong passwords from one address the next attempt gets
+// After auth.LoginPerIPMax wrong passwords from one address the next attempt gets
 // 429 with Retry-After, and even the right password waits for the window.
 func TestLoginIsRateLimitedAfterRepeatedFailures(t *testing.T) {
 	t.Setenv("CCW_OWNER_LOOPBACK", "")
 	h := NewWithAuth(openStore(t), nil, authConfig())
 	head := map[string]string{"CF-Connecting-IP": "198.51.100.77"}
-	for i := 1; i <= loginPerIPMax; i++ {
+	for i := 1; i <= auth.LoginPerIPMax; i++ {
 		if rec := send(h, loginPost("wrong-password-1", addrTunnel, head)); rec.Code != http.StatusUnauthorized {
 			t.Fatalf("wrong password %d: code=%d, want 401", i, rec.Code)
 		}
 	}
 	rec := send(h, loginPost(testPassword, addrTunnel, head))
 	if rec.Code != http.StatusTooManyRequests {
-		t.Fatalf("attempt %d: code=%d, want 429", loginPerIPMax+1, rec.Code)
+		t.Fatalf("attempt %d: code=%d, want 429", auth.LoginPerIPMax+1, rec.Code)
 	}
 	if rec.Header().Get("Retry-After") == "" {
 		t.Error("429 without Retry-After")
