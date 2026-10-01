@@ -8,7 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -80,7 +80,8 @@ func (a *api) hostedSearch(ctx context.Context, body []byte) ([]byte, *translate
 		}
 	}
 	if failure != "" {
-		log.Printf("web search %q: %s", query, failure)
+		// The query is the caller's text, so only its length is logged.
+		a.logFor(ctx).Warn("websearch.search.fail", "query_len", len(query), "reason", failure)
 	}
 	rewritten, err := websearch.Rewrite(body, query, results, failure)
 	if err != nil {
@@ -255,10 +256,11 @@ func followRedirects(ctx context.Context) func(string) string {
 // each once and not on every request.
 var droppedTools sync.Map
 
-func logDropped(names []string) {
+func logDropped(lg *slog.Logger, names []string) {
 	for _, n := range names {
 		if _, seen := droppedTools.LoadOrStore(n, true); !seen {
-			log.Printf("tool %s is dropped from the request: ccw does not emulate it, and the provider has none", n)
+			// ccw does not emulate the tool, and the provider has none.
+			lg.Warn("servertools.tool.drop", "tool", n)
 		}
 	}
 }

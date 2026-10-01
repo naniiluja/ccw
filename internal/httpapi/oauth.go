@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -152,7 +151,7 @@ func (a *api) secretFor(ctx context.Context, connID string) (string, error) {
 	tok, newRT, exp, rerr := oauth.Refresh(rctx, creds.TokenURL, creds.ClientID, creds.ClientSecret,
 		creds.RefreshToken, jsonTokenBody(a.providerOf(connID)))
 	if rerr != nil {
-		log.Printf("refresh oauth for connection %s: %v", connID, rerr)
+		a.logFor(ctx).Warn("oauth.refresh.fail", "connection", connID, "err", rerr)
 		return a.currentSecret(connID)
 	}
 	effRT := newRT
@@ -166,7 +165,7 @@ func (a *api) secretFor(ctx context.Context, connID string) (string, error) {
 			refreshToken: effRT,
 			expiresAt:    expStr,
 		})
-		logUnsavedToken(connID, uerr)
+		a.logUnsavedToken(ctx, connID, uerr)
 	} else {
 		a.refresh.clearOverride(connID)
 	}
@@ -196,8 +195,8 @@ func (a *api) providerOf(connID string) string {
 
 // logUnsavedToken reports a refresh that the store did not keep. This process
 // holds the only copy of the new token, so a restart loses the account.
-func logUnsavedToken(connID string, err error) {
-	log.Printf("store refreshed token for connection %s: %v", connID, err)
+func (a *api) logUnsavedToken(ctx context.Context, connID string, err error) {
+	a.logFor(ctx).Error("oauth.refresh.save.fail", "connection", connID, "err", err)
 }
 
 // needsRefresh reports whether an access token should be refreshed. An unknown
@@ -245,7 +244,7 @@ func (a *api) forceRefresh(ctx context.Context, connID string) (string, bool) {
 	tok, newRT, exp, rerr := oauth.Refresh(rctx, c.TokenURL, c.ClientID, c.ClientSecret,
 		c.RefreshToken, jsonTokenBody(a.providerOf(connID)))
 	if rerr != nil {
-		log.Printf("force refresh oauth for connection %s: %v", connID, rerr)
+		a.logFor(ctx).Warn("oauth.refresh.force.fail", "connection", connID, "err", rerr)
 		return "", false
 	}
 	effRT := newRT
@@ -259,7 +258,7 @@ func (a *api) forceRefresh(ctx context.Context, connID string) (string, bool) {
 			refreshToken: effRT,
 			expiresAt:    expStr,
 		})
-		logUnsavedToken(connID, uerr)
+		a.logUnsavedToken(ctx, connID, uerr)
 	} else {
 		a.refresh.clearOverride(connID)
 	}
@@ -541,7 +540,7 @@ func (a *api) exchangeLogin(ctx context.Context, p store.PendingLogin, code stri
 	}
 	if p.Provider == "claude" && isUUID(t.Organization.UUID) {
 		if err := a.store.SetMeta(c.ID, map[string]string{"claudeOrgId": t.Organization.UUID}); err != nil {
-			log.Printf("store claudeOrgId for %s: %v", c.ID, err)
+			a.logFor(ctx).Error("oauth.org_id.save.fail", "connection", c.ID, "err", err)
 		}
 	}
 	return c, nil

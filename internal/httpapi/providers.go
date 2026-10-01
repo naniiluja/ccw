@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"regexp"
 	"sort"
@@ -398,7 +397,7 @@ func (a *api) zenRequest(r *http.Request, body []byte, client, model string) (se
 	caller, source := zen.Caller(r.Header, payload)
 	sess := a.zen.pool.For(caller, source, body)
 	noteZenSession(r, sess)
-	log.Printf("zen: model=%s session=%s uses=%d caller=%s", id, sess.ID, sess.Uses, zenWho(sess))
+	a.logFor(r.Context()).Info("zen.session.use", "model", id, "session", sess.ID, "uses", sess.Uses, "caller", zenWho(sess))
 
 	if ep == zen.Responses {
 		send, err = zen.PrepareResponses(hub, sess.ID, pin)
@@ -452,7 +451,7 @@ func (a *api) relayZenSystemOne(w http.ResponseWriter, resp *http.Response, conn
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	w.Write(body)
-	a.recordUsage(connID, keyIDOf(resp), body, "")
+	a.recordUsage(a.respLog(resp), connID, keyIDOf(resp), body, "")
 }
 
 // zenSessions shows the held sessions, so reuse can be watched: which caller

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -391,7 +390,7 @@ func (a *api) claudeOrgID(ctx context.Context, c store.Connection, token string)
 	}
 
 	if err := a.store.SetMeta(c.ID, map[string]string{"claudeOrgId": uuid}); err != nil {
-		log.Printf("store claudeOrgId for %s: %v", c.ID, err)
+		a.logFor(ctx).Error("quota.org_id.save.fail", "connection", c.ID, "err", err)
 	}
 	return uuid, nil
 }
@@ -654,7 +653,8 @@ func (a *api) claimReset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("claim sent: connection=%s resetId=%s requestId=%s", cr.connID, cr.resetID, cr.requestID)
+	// claim_request_id is the provider's claim id, not a ccw req_id.
+	a.logFor(r.Context()).Info("quota.claim.send", "connection", cr.connID, "reset_id", cr.resetID, "claim_request_id", cr.requestID)
 	tctx, tcancel := context.WithTimeout(context.WithoutCancel(r.Context()), 20*time.Second)
 	defer tcancel()
 	token, terr := a.secretFor(tctx, cr.connID)
@@ -666,8 +666,8 @@ func (a *api) claimReset(w http.ResponseWriter, r *http.Request) {
 	if claimRes.Outcome == "failed" && claimRes.ProviderCode == "401" {
 		go a.refreshAfterClaim(cr.connID)
 	}
-	log.Printf("claim outcome: connection=%s resetId=%s requestId=%s outcome=%s providerCode=%s",
-		cr.connID, cr.resetID, cr.requestID, claimRes.Outcome, claimRes.ProviderCode)
+	a.logFor(r.Context()).Info("quota.claim.outcome", "connection", cr.connID, "reset_id", cr.resetID,
+		"claim_request_id", cr.requestID, "outcome", claimRes.Outcome, "provider_code", claimRes.ProviderCode)
 
 	a.recordClaimOutcome(cr, *target, claimRes)
 	writeJSON(w, a.claimAnswer(r.Context(), cr, claimRes))

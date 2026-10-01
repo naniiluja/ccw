@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -519,7 +518,7 @@ func (a *api) reviewOnce() {
 	switch {
 	case errors.Is(err, errReviewRunning):
 	case err != nil:
-		log.Printf("drift review: %v", err)
+		a.logger().Error("drift.review.fail", "err", err)
 		a.review.mu.Lock()
 		a.review.pauseTill, a.review.lastError = time.Now().Add(reviewBackoff), err.Error()
 		a.review.mu.Unlock()
@@ -527,7 +526,7 @@ func (a *api) reviewOnce() {
 		a.review.mu.Lock()
 		a.review.lastError = ""
 		a.review.mu.Unlock()
-		log.Printf("drift review: judged %d change(s)", n)
+		a.logger().Info("drift.review.done", "changes", n)
 	}
 }
 

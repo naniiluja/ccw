@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -449,7 +448,7 @@ func (a *api) autoTestHeld(prov string, models []string, retest bool) {
 		a.refreshCatalog(ctx, prov)
 		rows, err := a.store.ListModels(prov)
 		if err != nil {
-			log.Printf("autotest %s: %v", prov, err)
+			a.logFor(ctx).Error("models.autotest.fail", "provider", prov, "err", err)
 			return
 		}
 		for _, r := range rows {
