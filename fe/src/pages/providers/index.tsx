@@ -33,7 +33,7 @@ export default function ProvidersPage() {
         <div
           role="status"
           aria-label="Đang tải danh sách nhà cung cấp"
-          className="grid gap-4 lg:grid-cols-[18rem_minmax(0,1fr)]"
+          className="grid grid-cols-1 gap-4 lg:grid-cols-[18rem_minmax(0,1fr)]"
         >
           <div className="flex flex-col gap-2">
             <Skeleton className="h-14" />
@@ -61,7 +61,7 @@ export default function ProvidersPage() {
           </EmptyHeader>
         </Empty>
       ) : (
-        <div className="grid items-start gap-4 lg:grid-cols-[18rem_minmax(0,1fr)]">
+        <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[18rem_minmax(0,1fr)]">
           <ProviderList
             providers={providers.data}
             counts={counts.data}

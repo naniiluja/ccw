@@ -87,6 +87,14 @@ describe('trang khóa API', () => {
     expect(await screen.findByText('Chưa có khóa API nào')).toBeInTheDocument()
   })
 
+  it('hiện khóa khi máy chủ trả models là null (khóa dùng mọi model)', async () => {
+    // The Go server marshals a nil slice as null; the page must read it as "every model".
+    mockKeys([{ ...baseKey, models: null as unknown as string[] }])
+    await openPage()
+    expect(await screen.findAllByText('Máy build')).not.toHaveLength(0)
+    expect(screen.queryByText(/Không tải được trang/)).not.toBeInTheDocument()
+  })
+
   it('hiện lỗi tải kèm nút thử lại', { timeout: 15000 }, async () => {
     mockSession()
     server.use(http.get('*/keys', () => HttpResponse.json({ error: 'hỏng' }, { status: 500 })))

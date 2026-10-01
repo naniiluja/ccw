@@ -44,8 +44,12 @@ export const maxKeyRPM = 100000
 
 export const keysQuery = queryOptions({
   queryKey: ['keys'],
+  // The Go server marshals an empty model list as null, so normalize it here
+  // and let every consumer rely on a real array.
   queryFn: async ({ signal }) =>
-    (await api<{ keys: ApiKey[] | null }>('/keys', { signal })).keys ?? [],
+    ((await api<{ keys: ApiKey[] | null }>('/keys', { signal })).keys ?? []).map(
+      (k) => ({ ...k, models: k.models ?? [] }),
+    ),
 })
 
 export const useKeys = () => useQuery(keysQuery)

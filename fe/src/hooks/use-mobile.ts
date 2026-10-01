@@ -1,6 +1,8 @@
 import * as React from "react"
 
-const MOBILE_BREAKPOINT = 768
+// The inline sidebar takes 16rem, which leaves tables too little room between
+// 768px and 1023px, so the layout stays in its compact form up to 1024px.
+const MOBILE_BREAKPOINT = 1024
 
 export function useIsMobile() {
   const [isMobile, setIsMobile] = React.useState<boolean | undefined>(undefined)

@@ -76,10 +76,11 @@ export function CommandPalette() {
               <CommandGroup heading="Trang">
                 {routeTable
                   .filter((r) => r.nav)
-                  .map(({ path, title, icon: Icon }) => (
+                  .map(({ path, title, keywords, icon: Icon }) => (
                     <CommandItem
                       key={path}
                       value={title}
+                      keywords={keywords}
                       onSelect={() => run(() => void navigate(path))}
                     >
                       {Icon ? <Icon aria-hidden="true" /> : null}

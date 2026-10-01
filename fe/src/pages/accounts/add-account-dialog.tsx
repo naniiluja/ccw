@@ -87,8 +87,10 @@ function Wizard({ onClose }: { onClose: () => void }) {
       </DialogHeader>
       {step === 'kind' ? (
         <div className="flex flex-col gap-4">
+          {/* Card-style radio group, following the structure of @originui/comp-163. */}
           <RadioGroup
             aria-label={t.kindGroup}
+            className="grid-cols-1 sm:grid-cols-3"
             value={kind}
             onValueChange={(v) => {
               setKind(v as Kind)
@@ -98,14 +100,12 @@ function Wizard({ onClose }: { onClose: () => void }) {
             {kinds.map(({ id, icon: Icon }) => (
               <label
                 key={id}
-                className="flex cursor-pointer items-start gap-3 rounded-lg border p-3 has-data-[state=checked]:border-primary has-data-[state=checked]:bg-primary/5"
+                className="relative flex cursor-pointer flex-col items-center gap-2 rounded-md border border-input px-2 py-3 text-center shadow-xs outline-none transition-[color,box-shadow] has-data-[state=checked]:border-primary/50 has-data-[state=checked]:bg-primary/5 has-focus-visible:border-ring has-focus-visible:ring-[3px] has-focus-visible:ring-ring/50"
               >
-                <RadioGroupItem value={id} className="mt-1" />
-                <Icon className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-                <span className="flex flex-col">
-                  <span className="text-sm font-medium">{t.kinds[id].title}</span>
-                  <span className="text-xs text-muted-foreground">{t.kinds[id].hint}</span>
-                </span>
+                <RadioGroupItem value={id} className="sr-only" />
+                <Icon className="size-5 opacity-60" aria-hidden="true" />
+                <span className="text-xs font-medium leading-none">{t.kinds[id].title}</span>
+                <span className="text-xs text-muted-foreground">{t.kinds[id].hint}</span>
               </label>
             ))}
           </RadioGroup>

@@ -20,6 +20,8 @@ export interface AppRoute {
   /** Vietnamese title for the sidebar, breadcrumb and command palette. */
   title: string
   icon?: LucideIcon
+  /** Extra search terms for the command palette, such as the English feature name. */
+  keywords?: string[]
   /** Whether the route gets a sidebar entry. */
   nav: boolean
   /** The page renders inside the shell (login and the not-found page do not need the sidebar). */
@@ -35,6 +37,7 @@ export const routeTable: AppRoute[] = [
     path: '/',
     page: 'overview',
     title: 'Tổng quan',
+    keywords: ['overview','dashboard','home'],
     icon: LayoutDashboardIcon,
     nav: true,
     shell: true,
@@ -44,6 +47,7 @@ export const routeTable: AppRoute[] = [
     path: '/accounts',
     page: 'accounts',
     title: 'Tài khoản',
+    keywords: ['accounts','account','credential'],
     icon: UsersIcon,
     nav: true,
     shell: true,
@@ -53,6 +57,7 @@ export const routeTable: AppRoute[] = [
     path: '/providers',
     page: 'providers',
     title: 'Nhà cung cấp',
+    keywords: ['providers','provider','model','rotation'],
     icon: PlugZapIcon,
     nav: true,
     shell: true,
@@ -62,6 +67,7 @@ export const routeTable: AppRoute[] = [
     path: '/keys',
     page: 'keys',
     title: 'Khóa API',
+    keywords: ['keys','api key','token','rpm'],
     icon: KeyRoundIcon,
     nav: true,
     shell: true,
@@ -71,6 +77,7 @@ export const routeTable: AppRoute[] = [
     path: '/quota',
     page: 'quota',
     title: 'Hạn mức',
+    keywords: ['quota','limit','reset'],
     icon: GaugeIcon,
     nav: true,
     shell: true,
@@ -80,6 +87,7 @@ export const routeTable: AppRoute[] = [
     path: '/usage',
     page: 'usage',
     title: 'Lượng dùng',
+    keywords: ['usage','token','chart'],
     icon: ActivityIcon,
     nav: true,
     shell: true,
@@ -89,6 +97,7 @@ export const routeTable: AppRoute[] = [
     path: '/errors',
     page: 'errors',
     title: 'Lỗi upstream',
+    keywords: ['errors','error','upstream','review'],
     icon: TriangleAlertIcon,
     nav: true,
     shell: true,
@@ -98,6 +107,7 @@ export const routeTable: AppRoute[] = [
     path: '/drift',
     page: 'drift',
     title: 'Thay đổi shape',
+    keywords: ['drift','shape','schema'],
     icon: GitCompareArrowsIcon,
     nav: true,
     shell: true,
@@ -107,6 +117,7 @@ export const routeTable: AppRoute[] = [
     path: '/filters',
     page: 'filters',
     title: 'Bộ lọc',
+    keywords: ['filters','filter','blacklist','field'],
     icon: FilterIcon,
     nav: true,
     shell: true,
@@ -116,6 +127,7 @@ export const routeTable: AppRoute[] = [
     path: '/settings',
     page: 'settings',
     title: 'Cài đặt',
+    keywords: ['settings','config','web search','timezone'],
     icon: SettingsIcon,
     nav: true,
     shell: true,

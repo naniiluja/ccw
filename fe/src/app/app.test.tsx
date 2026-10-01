@@ -44,6 +44,17 @@ describe('shell', () => {
     await waitFor(() => expect(app.router.state.location.pathname).toBe('/keys'))
   })
 
+  it('finds a page in the palette by its English feature name', async () => {
+    useSession()
+    const user = userEvent.setup()
+    const app = renderApp('/')
+    await screen.findByRole('heading', { name: 'Tổng quan' })
+    await user.keyboard('{Control>}k{/Control}')
+    await user.type(await screen.findByPlaceholderText(/Gõ tên trang/), 'drift')
+    await user.click(await screen.findByRole('option', { name: /Thay đổi shape/ }))
+    await waitFor(() => expect(app.router.state.location.pathname).toBe('/drift'))
+  })
+
   it('writes the chosen theme to localStorage and the dark class', async () => {
     useSession()
     const user = userEvent.setup()

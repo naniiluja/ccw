@@ -24,7 +24,7 @@ function AccountError({ message }: { message: string }) {
   return (
     <p className="flex items-start gap-2 text-sm text-destructive">
       <TriangleAlertIcon className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-      <span>{message}</span>
+      <span className="min-w-0 break-words [overflow-wrap:anywhere]">{message}</span>
     </p>
   )
 }

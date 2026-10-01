@@ -1,7 +1,11 @@
 import '@testing-library/jest-dom/vitest'
-import { cleanup } from '@testing-library/react'
+import { cleanup, configure } from '@testing-library/react'
 import { afterAll, afterEach, beforeAll } from 'vitest'
 import { server } from './server'
+
+// The first test of a file loads its lazy page chunk, which can take longer
+// than the default 1000ms while other gates run, so wait a little longer.
+configure({ asyncUtilTimeout: 5000 })
 
 // jsdom lacks the browser APIs that Radix, cmdk and the sidebar rely on.
 class ResizeObserverStub {
