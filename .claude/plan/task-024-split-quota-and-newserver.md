@@ -21,6 +21,7 @@ Giảm độ phức tạp của nhận phần thưởng reset quota và của h�
 - `TestAdminAPIRoutesRefuseADashboardKey` phải xanh để chắc không route ghi nào mất `requireAdmin`.
 
 ## Files to touch
+- internal/httpapi/keys.go, internal/httpapi/providers.go, internal/httpapi/models.go — thêm constructor `newKeyLimiter`, `newSigStore`, `newCopilotCache`, `newAutoState` cạnh kiểu của chúng
 - internal/httpapi/quota_resets.go
 - internal/httpapi/quota.go
 - internal/httpapi/server.go
