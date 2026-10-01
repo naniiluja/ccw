@@ -38,8 +38,25 @@ func OpenAIToGemini(body []byte, sigs Signatures) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	model := str(in["model"])
 	out := obj{}
+	contents, system := geminiContents(list(in["messages"]), sigs)
+	if len(contents) == 0 || contents[0]["role"] != "user" {
+		contents = append([]obj{{"role": "user", "parts": []any{obj{"text": "..."}}}}, contents...)
+	}
+	out["contents"] = contents
+	if len(system) > 0 {
+		out["systemInstruction"] = obj{"role": "user", "parts": []any{obj{"text": strings.Join(system, "\n\n")}}}
+	}
+	if gen := geminiGenerationConfig(in); len(gen) > 0 {
+		out["generationConfig"] = gen
+	}
+	geminiTools(in, out)
+	return json.Marshal(out)
+}
+
+// geminiContents converts OpenAI messages to Gemini contents, merging adjacent
+// turns of one role, and returns the system texts apart.
+func geminiContents(messages []any, sigs Signatures) ([]obj, []string) {
 	var system []string
 	var contents []obj
 	names := map[string]string{} // tool call id -> function name
@@ -53,7 +70,7 @@ func OpenAIToGemini(body []byte, sigs Signatures) ([]byte, error) {
 		}
 		contents = append(contents, obj{"role": role, "parts": parts})
 	}
-	for _, raw := range list(in["messages"]) {
+	for _, raw := range messages {
 		m := asObj(raw)
 		switch str(m["role"]) {
 		case "system", "developer":
@@ -95,14 +112,14 @@ func OpenAIToGemini(body []byte, sigs Signatures) ([]byte, error) {
 			add("user", []any{obj{"functionResponse": obj{"id": id, "name": names[id], "response": result}}})
 		}
 	}
-	if len(contents) == 0 || contents[0]["role"] != "user" {
-		contents = append([]obj{{"role": "user", "parts": []any{obj{"text": "..."}}}}, contents...)
-	}
-	out["contents"] = contents
-	if len(system) > 0 {
-		out["systemInstruction"] = obj{"role": "user", "parts": []any{obj{"text": strings.Join(system, "\n\n")}}}
-	}
+	return contents, system
+}
 
+// geminiGenerationConfig builds generationConfig: sampling, stop sequences,
+// thinking, the output token cap thinking depends on, and the JSON response
+// format. It returns an empty object when the request sets none of them.
+func geminiGenerationConfig(in obj) obj {
+	model := str(in["model"])
 	gen := obj{}
 	if v, ok := in["temperature"]; ok {
 		gen["temperature"] = v
@@ -153,48 +170,48 @@ func OpenAIToGemini(body []byte, sigs Signatures) ([]byte, error) {
 			gen["responseSchema"] = CleanGeminiSchema(s)
 		}
 	}
-	if len(gen) > 0 {
-		out["generationConfig"] = gen
-	}
+	return gen
+}
 
-	if tools := list(in["tools"]); len(tools) > 0 {
-		var decls []any
-		seen := map[string]bool{}
-		for _, t := range tools {
-			fn := asObj(asObj(t)["function"])
-			name := geminiName(str(fn["name"]))
-			if fn == nil || name == "" || seen[name] {
-				continue
-			}
-			seen[name] = true
-			d := obj{"name": name, "parameters": CleanGeminiSchema(fn["parameters"])}
-			if s := str(fn["description"]); s != "" {
-				d["description"] = s
-			}
-			decls = append(decls, d)
+// geminiTools sets tools and toolConfig from the function tools of a request,
+// one declaration per sanitized name, and leaves both out when none is left.
+func geminiTools(in, out obj) {
+	var decls []any
+	seen := map[string]bool{}
+	for _, t := range list(in["tools"]) {
+		fn := asObj(asObj(t)["function"])
+		name := geminiName(str(fn["name"]))
+		if fn == nil || name == "" || seen[name] {
+			continue
 		}
-		if len(decls) > 0 {
-			out["tools"] = []any{obj{"functionDeclarations": decls}}
-			fc := obj{"mode": "VALIDATED"}
-			switch tc := in["tool_choice"].(type) {
-			case string:
-				if tc == "required" {
-					fc["mode"] = "ANY"
-				} else if tc == "none" {
-					fc["mode"] = "NONE"
-				}
-			case obj:
-				// The object form names one tool. Without allowedFunctionNames the
-				// model stays free to answer in text.
-				if name := geminiName(str(asObj(tc["function"])["name"])); name != "" {
-					fc["mode"] = "ANY"
-					fc["allowedFunctionNames"] = []any{name}
-				}
-			}
-			out["toolConfig"] = obj{"functionCallingConfig": fc}
+		seen[name] = true
+		d := obj{"name": name, "parameters": CleanGeminiSchema(fn["parameters"])}
+		if s := str(fn["description"]); s != "" {
+			d["description"] = s
+		}
+		decls = append(decls, d)
+	}
+	if len(decls) == 0 {
+		return
+	}
+	out["tools"] = []any{obj{"functionDeclarations": decls}}
+	fc := obj{"mode": "VALIDATED"}
+	switch tc := in["tool_choice"].(type) {
+	case string:
+		if tc == "required" {
+			fc["mode"] = "ANY"
+		} else if tc == "none" {
+			fc["mode"] = "NONE"
+		}
+	case obj:
+		// The object form names one tool. Without allowedFunctionNames the
+		// model stays free to answer in text.
+		if name := geminiName(str(asObj(tc["function"])["name"])); name != "" {
+			fc["mode"] = "ANY"
+			fc["allowedFunctionNames"] = []any{name}
 		}
 	}
-	return json.Marshal(out)
+	out["toolConfig"] = obj{"functionCallingConfig": fc}
 }
 
 var geminiNameRE = regexp.MustCompile(`[^a-zA-Z0-9_.:-]`)
@@ -276,8 +293,18 @@ func CleanGeminiSchema(v any) any {
 }
 
 func cleanSchema(s obj) obj {
+	foldCombinators(s)
 	out := obj{}
-	// Fold combinators into the schema itself first.
+	for k, val := range s {
+		cleanSchemaKey(out, k, val)
+	}
+	finishSchema(out)
+	return out
+}
+
+// foldCombinators merges anyOf and oneOf (their best branch) and allOf (every
+// branch) into s itself; a key s already has wins over a branch's.
+func foldCombinators(s obj) {
 	for _, k := range []string{"anyOf", "oneOf"} {
 		if branches := list(s[k]); len(branches) > 0 {
 			best := pickBranch(branches)
@@ -304,53 +331,62 @@ func cleanSchema(s obj) obj {
 			}
 		}
 	}
-	for k, val := range s {
-		switch {
-		case k == "anyOf" || k == "oneOf" || k == "allOf" || geminiDropKeys[k] || strings.HasPrefix(k, "x-"):
-		case k == "const":
-			out["enum"] = []any{stringify(val)}
-		case k == "enum":
-			var e []any
-			for _, x := range list(val) {
-				if x != nil {
-					e = append(e, stringify(x))
-				}
+}
+
+// cleanSchemaKey writes the Gemini form of one schema keyword to out, or
+// nothing for a combinator or a keyword Gemini has no field for.
+func cleanSchemaKey(out obj, k string, val any) {
+	switch {
+	case k == "anyOf" || k == "oneOf" || k == "allOf" || geminiDropKeys[k] || strings.HasPrefix(k, "x-"):
+	case k == "const":
+		out["enum"] = []any{stringify(val)}
+	case k == "enum":
+		var e []any
+		for _, x := range list(val) {
+			if x != nil {
+				e = append(e, stringify(x))
 			}
-			// An empty enum must not become "enum": null, which Gemini rejects.
-			if len(e) > 0 {
-				out["enum"] = e
-			}
-		case k == "type":
-			if l := list(val); l != nil {
-				for _, t := range l {
-					if t != "null" {
-						out["type"] = t
-						break
-					}
-				}
-			} else {
-				out["type"] = val
-			}
-		case k == "properties":
-			props := obj{}
-			for pk, pv := range asObj(val) {
-				if ps := asObj(pv); ps != nil {
-					props[pk] = cleanSchema(ps)
-				}
-			}
-			out["properties"] = props
-		case k == "items":
-			if l := list(val); l != nil {
-				if len(l) > 0 {
-					out["items"] = cleanSchema(asObj(l[0]))
-				}
-			} else if is := asObj(val); is != nil {
-				out["items"] = cleanSchema(is)
-			}
-		default:
-			out[k] = val
 		}
+		// An empty enum must not become "enum": null, which Gemini rejects.
+		if len(e) > 0 {
+			out["enum"] = e
+		}
+	case k == "type":
+		if l := list(val); l != nil {
+			for _, t := range l {
+				if t != "null" {
+					out["type"] = t
+					break
+				}
+			}
+		} else {
+			out["type"] = val
+		}
+	case k == "properties":
+		props := obj{}
+		for pk, pv := range asObj(val) {
+			if ps := asObj(pv); ps != nil {
+				props[pk] = cleanSchema(ps)
+			}
+		}
+		out["properties"] = props
+	case k == "items":
+		if l := list(val); l != nil {
+			if len(l) > 0 {
+				out["items"] = cleanSchema(asObj(l[0]))
+			}
+		} else if is := asObj(val); is != nil {
+			out["items"] = cleanSchema(is)
+		}
+	default:
+		out[k] = val
 	}
+}
+
+// finishSchema fills what Gemini requires once every keyword is in: a type,
+// items for an array, and a property for an object, whose required list
+// keeps only the properties it has.
+func finishSchema(out obj) {
 	if out["type"] == nil && out["properties"] != nil {
 		out["type"] = "object"
 	}
@@ -360,26 +396,28 @@ func cleanSchema(s obj) obj {
 	if out["type"] == "array" && out["items"] == nil {
 		out["items"] = obj{"type": "string"}
 	}
-	if out["type"] == "object" {
-		props := asObj(out["properties"])
-		if len(props) == 0 {
-			out["properties"] = obj{"reason": obj{"type": "string"}}
-			out["required"] = []any{"reason"}
-		} else if req := list(out["required"]); req != nil {
-			var keep []any
-			for _, r := range req {
-				if _, ok := props[str(r)]; ok {
-					keep = append(keep, r)
-				}
-			}
-			if keep == nil {
-				delete(out, "required")
-			} else {
-				out["required"] = keep
+	if out["type"] != "object" {
+		return
+	}
+	props := asObj(out["properties"])
+	if len(props) == 0 {
+		out["properties"] = obj{"reason": obj{"type": "string"}}
+		out["required"] = []any{"reason"}
+		return
+	}
+	if req := list(out["required"]); req != nil {
+		var keep []any
+		for _, r := range req {
+			if _, ok := props[str(r)]; ok {
+				keep = append(keep, r)
 			}
 		}
+		if keep == nil {
+			delete(out, "required")
+		} else {
+			out["required"] = keep
+		}
 	}
-	return out
 }
 
 // pickBranch prefers an object branch, then an array, then any non-null one.

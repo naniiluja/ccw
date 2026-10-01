@@ -116,113 +116,11 @@ func HealAnthropic(body []byte) ([]byte, bool) {
 	if !ok {
 		return body, false
 	}
-	changed := false
-
-	// Drop thinking blocks with no signature, and merge adjacent user turns so
-	// that a tool_result split into a later turn still finds its tool_use.
-	var msgs []obj
-	for _, r := range raw {
-		m := asObj(r)
-		role := str(m["role"])
-		if role != "user" && role != "assistant" {
-			changed = true
-			continue
-		}
-		content := m["content"]
-		if blocks, isList := content.([]any); isList && role == "assistant" {
-			kept := make([]any, 0, len(blocks))
-			for _, b := range blocks {
-				if bb := asObj(b); str(bb["type"]) == "thinking" && str(bb["signature"]) == "" {
-					continue
-				}
-				kept = append(kept, b)
-			}
-			if len(kept) != len(blocks) {
-				changed, content = true, kept
-			}
-			if len(kept) == 0 {
-				changed = true
-				continue
-			}
-		}
-		if n := len(msgs); role == "user" && n > 0 && str(msgs[n-1]["role"]) == "user" {
-			msgs[n-1]["content"] = append(anthropicBlocks(msgs[n-1]["content"]), anthropicBlocks(content)...)
-			changed = true
-			continue
-		}
-		msgs = append(msgs, withContent(m, content))
-	}
-
-	// Pair every tool_use with a tool_result at the head of the next user turn.
-	var out []obj
-	for i, m := range msgs {
-		if str(m["role"]) == "assistant" {
-			out = append(out, m)
-			if ids := toolUseIDs(m["content"]); len(ids) > 0 && (i+1 >= len(msgs) || str(msgs[i+1]["role"]) != "user") {
-				out = append(out, obj{"role": "user", "content": placeholderResults(ids)})
-				changed = true
-			}
-			continue
-		}
-		var pending []string
-		if n := len(out); n > 0 && str(out[n-1]["role"]) == "assistant" {
-			pending = toolUseIDs(out[n-1]["content"])
-		}
-		blocks := anthropicBlocks(m["content"])
-		results := map[string]any{}
-		var rest []any
-		sawResult := false
-		for _, b := range blocks {
-			bb := asObj(b)
-			if str(bb["type"]) != "tool_result" {
-				rest = append(rest, b)
-				continue
-			}
-			sawResult = true
-			if id := str(bb["tool_use_id"]); slices.Contains(pending, id) && results[id] == nil {
-				results[id] = b
-				continue
-			}
-			rest = append(rest, obj{"type": "text", "text": toolResultText(bb)})
-			changed = true
-		}
-		if !sawResult && len(pending) == 0 {
-			out = append(out, m)
-			continue
-		}
-		var content []any
-		for _, id := range pending {
-			if r := results[id]; r != nil {
-				content = append(content, r)
-			} else {
-				content = append(content, placeholderResult(id))
-				changed = true
-			}
-		}
-		content = append(content, rest...)
-		if sameBlocks(content, blocks) {
-			out = append(out, m)
-			continue
-		}
+	msgs, changed := healTurns(raw)
+	out, paired := pairToolResults(msgs)
+	changed = changed || paired
+	if dropStaleThinking(in, out) {
 		changed = true
-		if len(content) == 0 {
-			content = []any{obj{"type": "text", "text": "(empty)"}}
-		}
-		out = append(out, withContent(m, content))
-	}
-
-	// Thinking on, in a tool loop whose last assistant turn does not open with
-	// thinking: Anthropic refuses it, so this one request runs without thinking.
-	if t := str(asObj(in["thinking"])["type"]); t != "" && t != "disabled" && len(out) >= 2 {
-		last, before := out[len(out)-1], out[len(out)-2]
-		first := anthropicBlocks(before["content"])
-		if str(last["role"]) == "user" && hasBlockOfType(last["content"], "tool_result") &&
-			str(before["role"]) == "assistant" && len(first) > 0 {
-			if ft := str(asObj(first[0])["type"]); ft != "thinking" && ft != "redacted_thinking" {
-				delete(in, "thinking")
-				changed = true
-			}
-		}
 	}
 
 	if !changed {
@@ -238,6 +136,146 @@ func HealAnthropic(body []byte) ([]byte, bool) {
 		return body, false
 	}
 	return b, true
+}
+
+// healTurns drops turns that are neither user nor assistant and thinking
+// blocks with no signature, and merges adjacent user turns so that a
+// tool_result split into a later turn still finds its tool_use. It reports
+// whether anything changed.
+func healTurns(raw []any) ([]obj, bool) {
+	changed := false
+	var msgs []obj
+	for _, r := range raw {
+		m := asObj(r)
+		role := str(m["role"])
+		if role != "user" && role != "assistant" {
+			changed = true
+			continue
+		}
+		content := m["content"]
+		if blocks, isList := content.([]any); isList && role == "assistant" {
+			kept := dropUnsignedThinking(blocks)
+			if len(kept) != len(blocks) {
+				changed, content = true, kept
+			}
+			if len(kept) == 0 {
+				changed = true
+				continue
+			}
+		}
+		if n := len(msgs); role == "user" && n > 0 && str(msgs[n-1]["role"]) == "user" {
+			msgs[n-1]["content"] = append(anthropicBlocks(msgs[n-1]["content"]), anthropicBlocks(content)...)
+			changed = true
+			continue
+		}
+		msgs = append(msgs, withContent(m, content))
+	}
+	return msgs, changed
+}
+
+// dropUnsignedThinking returns the blocks without the thinking blocks whose
+// signature is empty; the kept blocks are the same values, not copies.
+func dropUnsignedThinking(blocks []any) []any {
+	kept := make([]any, 0, len(blocks))
+	for _, b := range blocks {
+		if bb := asObj(b); str(bb["type"]) == "thinking" && str(bb["signature"]) == "" {
+			continue
+		}
+		kept = append(kept, b)
+	}
+	return kept
+}
+
+// pairToolResults gives every tool_use a tool_result at the head of the next
+// user turn, adding a user turn when none follows. It reports whether
+// anything changed.
+func pairToolResults(msgs []obj) ([]obj, bool) {
+	changed := false
+	var out []obj
+	for i, m := range msgs {
+		if str(m["role"]) == "assistant" {
+			out = append(out, m)
+			if ids := toolUseIDs(m["content"]); len(ids) > 0 && (i+1 >= len(msgs) || str(msgs[i+1]["role"]) != "user") {
+				out = append(out, obj{"role": "user", "content": placeholderResults(ids)})
+				changed = true
+			}
+			continue
+		}
+		var pending []string
+		if n := len(out); n > 0 && str(out[n-1]["role"]) == "assistant" {
+			pending = toolUseIDs(out[n-1]["content"])
+		}
+		healed, c := pairUserTurn(m, pending)
+		out = append(out, healed)
+		changed = changed || c
+	}
+	return out, changed
+}
+
+// pairUserTurn puts the results of the pending calls first in a user turn, in
+// call order, with a placeholder for a missing one, and turns any other
+// tool_result into text. A turn that needs no repair comes back as it came.
+func pairUserTurn(m obj, pending []string) (obj, bool) {
+	changed := false
+	blocks := anthropicBlocks(m["content"])
+	results := map[string]any{}
+	var rest []any
+	sawResult := false
+	for _, b := range blocks {
+		bb := asObj(b)
+		if str(bb["type"]) != "tool_result" {
+			rest = append(rest, b)
+			continue
+		}
+		sawResult = true
+		if id := str(bb["tool_use_id"]); slices.Contains(pending, id) && results[id] == nil {
+			results[id] = b
+			continue
+		}
+		rest = append(rest, obj{"type": "text", "text": toolResultText(bb)})
+		changed = true
+	}
+	if !sawResult && len(pending) == 0 {
+		return m, changed
+	}
+	var content []any
+	for _, id := range pending {
+		if r := results[id]; r != nil {
+			content = append(content, r)
+		} else {
+			content = append(content, placeholderResult(id))
+			changed = true
+		}
+	}
+	content = append(content, rest...)
+	if sameBlocks(content, blocks) {
+		return m, changed
+	}
+	if len(content) == 0 {
+		content = []any{obj{"type": "text", "text": "(empty)"}}
+	}
+	return withContent(m, content), true
+}
+
+// dropStaleThinking removes thinking from a request that has it on in a tool
+// loop whose last assistant turn does not open with thinking: Anthropic
+// refuses that, so this one request runs without thinking. It reports whether
+// it removed it.
+func dropStaleThinking(in obj, out []obj) bool {
+	if t := str(asObj(in["thinking"])["type"]); t == "" || t == "disabled" || len(out) < 2 {
+		return false
+	}
+	last, before := out[len(out)-1], out[len(out)-2]
+	first := anthropicBlocks(before["content"])
+	if str(last["role"]) != "user" || !hasBlockOfType(last["content"], "tool_result") ||
+		str(before["role"]) != "assistant" || len(first) == 0 {
+		return false
+	}
+	if ft := str(asObj(first[0])["type"]); ft == "thinking" || ft == "redacted_thinking" {
+		return false
+	}
+	delete(in, "thinking")
+	return true
 }
 
 // anthropicBlocks reads message content, a string or a list, as a list of blocks.
