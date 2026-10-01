@@ -53,13 +53,13 @@ export function UsageChart({
             <YAxis
               tickLine={false}
               axisLine={false}
-              width={48}
+              width={72}
               tickFormatter={formatCompact}
               label={{
                 value: 'Token',
                 angle: -90,
                 position: 'insideLeft',
-                offset: 8,
+                offset: 0,
                 style: { textAnchor: 'middle' },
               }}
             />

@@ -133,7 +133,7 @@ export default function KeysPage() {
     body = (
       <div className="flex flex-col gap-4">
         <Tabs value={filter} onValueChange={(v) => setFilter(v as Filter)}>
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto sm:overflow-visible">
             <TabsList aria-label={s.filterLabel}>
               {filterOrder.map((f) => (
                 <TabsTrigger key={f} value={f}>

@@ -48,7 +48,7 @@ export function QuotaCards({ accounts, onNotice }: ViewProps) {
             <div className="flex flex-wrap items-center gap-1.5">
               <Badge variant="secondary">{a.provider}</Badge>
               {a.plan ? <Badge variant="outline">{a.plan}</Badge> : null}
-              <Badge variant="outline">{sourceText(a.source)}</Badge>
+              {a.source ? <Badge variant="outline">{sourceText(a.source)}</Badge> : null}
             </div>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
@@ -90,7 +90,7 @@ export function QuotaTable({ accounts, onNotice }: ViewProps) {
               <TableCell className="font-medium">{a.label}</TableCell>
               <TableCell>{a.provider}</TableCell>
               <TableCell>{a.plan ?? '—'}</TableCell>
-              <TableCell>{sourceText(a.source)}</TableCell>
+              <TableCell>{a.source ? sourceText(a.source) : '—'}</TableCell>
               <TableCell>
                 <div className="flex flex-col gap-3 py-1">
                   {a.error ? <AccountError message={a.error} /> : null}

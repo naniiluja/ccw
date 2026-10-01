@@ -105,13 +105,13 @@ export function UsageBlock() {
               <YAxis
                 tickLine={false}
                 axisLine={false}
-                width={48}
+                width={72}
                 tickFormatter={(v: number) => compact.format(v)}
                 label={{
                   value: 'Token',
                   angle: -90,
                   position: 'insideLeft',
-                  offset: 8,
+                  offset: 0,
                   style: { textAnchor: 'middle' },
                 }}
               />
