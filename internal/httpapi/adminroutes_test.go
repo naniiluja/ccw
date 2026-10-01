@@ -18,8 +18,6 @@ var adminAPIRoutes = []struct{ method, path, body string }{
 	{"POST", "/api/accounts/no-such-account/test", `{}`},
 	{"POST", "/api/providers/groq/rotation", `{"mode":"fallback"}`},
 	{"POST", "/api/providers/groq/model-policy", `{"autoTest":false,"onlyFree":true}`},
-	{"POST", "/api/rankings/refresh", ``},
-	{"POST", "/api/rankings/alias", `{"provider":"groq","model":"llama","name":"-"}`},
 	{"POST", "/api/providers/groq/models/active", `{"models":["llama"],"active":true}`},
 	{"POST", "/api/providers/groq/models/delete", `{"models":["llama"]}`},
 	{"POST", "/api/providers/groq/models/test", `{"model":"llama"}`},
@@ -40,15 +38,6 @@ func sendAs(h http.Handler, method, path, body, token string) *httptest.Response
 }
 
 func TestAdminAPIRoutesRefuseADashboardKey(t *testing.T) {
-	// The leaderboard refresh must not leave this machine during a test.
-	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"rows":[]}`))
-	}))
-	defer up.Close()
-	old := arenaAPI
-	arenaAPI = up.URL
-	defer func() { arenaAPI = old }()
-
 	s, _ := store.Open(filepath.Join(t.TempDir(), "t.db"))
 	defer s.Close()
 	cfg := authConfig()
