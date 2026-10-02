@@ -72,3 +72,64 @@ func TestDeleteConnection(t *testing.T) {
 		t.Error("DeleteConnection on unknown id returned no error")
 	}
 }
+
+func TestSeedKeylessConnectionsAddsZenOnceAndRespectsDeletion(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	count := func() (n int, id string) {
+		list, err := s.ListConnections()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range list {
+			if c.Provider == "opencode" {
+				n++
+				id = c.ID
+			}
+		}
+		return n, id
+	}
+
+	for i := 0; i < 2; i++ {
+		if err := s.SeedKeylessConnections(); err != nil {
+			t.Fatalf("SeedKeylessConnections: %v", err)
+		}
+	}
+	n, id := count()
+	if n != 1 {
+		t.Fatalf("opencode connections = %d after two seeds, want 1", n)
+	}
+
+	// An owner who deletes the account keeps it deleted across restarts.
+	if err := s.DeleteConnection(id); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SeedKeylessConnections(); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := count(); n != 0 {
+		t.Fatalf("opencode connections = %d after delete and reseed, want 0", n)
+	}
+}
+
+func TestSeedKeylessConnectionsKeepsAnExistingAccount(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.CreateConnection("opencode", "OpenCode Zen", "public"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SeedKeylessConnections(); err != nil {
+		t.Fatal(err)
+	}
+	list, _ := s.ListConnections()
+	if len(list) != 1 {
+		t.Fatalf("connections = %d, want the existing one only", len(list))
+	}
+}

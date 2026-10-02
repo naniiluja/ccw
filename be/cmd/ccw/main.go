@@ -33,6 +33,9 @@ func main() {
 		log.Fatalf("open store: %v", err)
 	}
 	defer s.Close()
+	if err := s.SeedKeylessConnections(); err != nil {
+		log.Fatalf("seed keyless accounts: %v", err)
+	}
 
 	// The password notice goes to stderr as plain text: through log.Writer()
 	// it would now be folded into one JSON line.

@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/naniiluja/ccw/internal/provider"
 )
 
 // ErrNotFound reports that no connection has the requested id.
@@ -53,6 +55,40 @@ func (s *Store) CreateConnection(provider, label, secret string) (Connection, er
 		return Connection{}, fmt.Errorf("insert connection: %w", err)
 	}
 	return Connection{ID: id, Provider: provider, Label: label, IsActive: true}, nil
+}
+
+// SeedKeylessConnections gives a fresh database one account for each provider
+// that needs no credential (OpenCode Zen), so it works without any setup. Each
+// provider is seeded once: the settings key records it, so an owner who
+// deletes the account does not get it back at the next start.
+func (s *Store) SeedKeylessConnections() error {
+	for _, id := range provider.IDs() {
+		p, ok := provider.Lookup(id)
+		if !ok || p.Setup != "none" {
+			continue
+		}
+		key := "seeded_keyless_" + id
+		if done, err := s.GetSetting(key); err != nil || done != "" {
+			if err != nil {
+				return fmt.Errorf("read %s: %w", key, err)
+			}
+			continue
+		}
+		// A database that predates seeding may already hold the account.
+		var have int
+		if err := s.DB.QueryRow(`SELECT COUNT(*) FROM connections WHERE provider = ?`, id).Scan(&have); err != nil {
+			return fmt.Errorf("count %s connections: %w", id, err)
+		}
+		if have == 0 {
+			if _, err := s.CreateConnection(id, id, p.DefaultSecret); err != nil {
+				return err
+			}
+		}
+		if err := s.SetSetting(key, "1"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ListConnections returns every connection, newest first, without secrets.
