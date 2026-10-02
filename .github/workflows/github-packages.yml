@@ -1,7 +1,8 @@
 # Publishes the npm packages to GitHub Packages as @<owner>/ccw-gateway, so the
 # repository page lists them. npmjs.com gets the same packages without a scope.
 # scripts/check.sh (gofmt, go vet, staticcheck, gocyclo, go test -race with the
-# architecture and size tests) runs on every push to master and every pull
+# architecture and size tests) and the frontend job (fe/: pnpm lint, typecheck,
+# test, build) run on every push to master and every pull
 # request, and a v* tag publishes only after it passes.
 name: GitHub Packages
 on:
@@ -19,11 +20,44 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version-file: be/go.mod
+      # scripts/check.sh also runs the fe/ gates, so the job needs pnpm and Node.
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: fe/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22.x'
+          cache: pnpm
+          cache-dependency-path: fe/pnpm-lock.yaml
       - name: Check (same gates as local scripts/check.sh)
         run: bash scripts/check.sh
+  frontend:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: fe
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: fe/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22.x'
+          cache: pnpm
+          cache-dependency-path: fe/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
   publish:
-    needs: test
+    # Publishing waits for both gates: the Go checks (scripts/check.sh) and the
+    # frontend job. The Build step builds the SPA first (scripts/ui-build.sh).
+    needs: [test, frontend]
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -33,7 +67,10 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version-file: be/go.mod
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: fe/package.json
       - uses: actions/setup-node@v7
         with:
           node-version: '22.x'

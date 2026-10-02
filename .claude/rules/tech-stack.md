@@ -7,8 +7,8 @@ Philosophy: chọn stack **ổn định nhất, phổ biến nhất, ít lỗi n
 - HTTP: stdlib `net/http` với `ServeMux` pattern Go 1.22+ (`GET /path`, `/v1/{path...}`). Không router ngoài. `http.Server` đặt `ReadHeaderTimeout` 10s và `IdleTimeout` 120s; `WriteTimeout` cố ý để trống để không cắt stream dài (`newHTTPServer` trong `cmd/ccw/main.go`).
 - Database: SQLite qua `modernc.org/sqlite` (pure Go, `CGO_ENABLED=0`), chế độ WAL, file `ccw.db` và file `-wal`/`-shm` quyền `0o600`. Schema đánh số bằng `PRAGMA user_version`.
 - Log: `log/slog` với handler JSON ra stderr.
-- Dashboard UI: đã gỡ, sẽ viết lại. Chưa chọn stack.
-- Phân phối: gói npm `ccw-gateway` (Node >=18) kéo binary theo nền tảng qua `optionalDependencies`, build bằng `scripts/npm-build.sh`. CI publish lên GitHub Packages khi có tag `v*`, sau khi job `test` xanh.
+- Dashboard UI (`fe/`, chi tiết ở `frontend.md`): React 19, Vite, TypeScript, Tailwind v4, shadcn/ui kiểu Radix (`radix-vega`) cộng registry `@originui`, TanStack Query và TanStack Table, React Router, react-hook-form (zod cho các form có ràng buộc phức tạp, xem `frontend.md`), recharts qua shadcn chart, Vitest với Testing Library và MSW, lint bằng oxlint, quản lý gói bằng pnpm (ghim ở `packageManager` của `fe/package.json`). Build ra `fe/dist`, `scripts/ui-build.sh` copy vào `be/internal/webui/static/` và `go:embed` nhúng vào binary; không cần Node lúc chạy.
+- Phân phối: gói npm `ccw-gateway` (Node >=18) kéo binary theo nền tảng qua `optionalDependencies`, build bằng `scripts/npm-build.sh` (gọi `scripts/ui-build.sh` trước `go build`, nên máy build cần Node và pnpm). CI publish lên GitHub Packages khi có tag `v*`, sau khi job `test` xanh.
 
 ## Core libraries (một lựa chọn cố định mỗi việc)
 - Routing `net/http.ServeMux`. DB driver `modernc.org/sqlite`. Log `log/slog`.

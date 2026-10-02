@@ -11,3 +11,12 @@ ccw.env
 dist/
 .claude/worktrees/
 .claude/settings.local.json
+/be/ccw
+/be/*.db
+/be/*.db-shm
+/be/*.db-wal
+fe/node_modules/
+fe/dist/
+fe/*.tsbuildinfo
+be/internal/webui/static/*
+!be/internal/webui/static/.gitkeep

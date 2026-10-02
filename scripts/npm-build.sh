@@ -5,8 +5,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 OUT=${1:-dist/npm}
+# The binaries build inside be/, so OUT becomes absolute before that cd.
+case "$OUT" in /*) ;; *) OUT="$PWD/$OUT" ;; esac
 VERSION=$(node -p "require('./npm/ccw-gateway/package.json').version")
 rm -rf "$OUT" && mkdir -p "$OUT"
+# The SPA is embedded into every binary, so it is built before the first binary is compiled.
+bash scripts/ui-build.sh
 for target in linux/amd64/linux/x64 linux/arm64/linux/arm64 darwin/amd64/darwin/x64 \
               darwin/arm64/darwin/arm64 windows/amd64/win32/x64 windows/arm64/win32/arm64; do
   IFS=/ read -r goos goarch os cpu <<<"$target"
@@ -16,7 +20,7 @@ for target in linux/amd64/linux/x64 linux/arm64/linux/arm64 darwin/amd64/darwin/
   dir="$OUT/${name#"${NPM_SCOPE:-}"}"
   exe=ccw; [ "$goos" = windows ] && exe=ccw.exe
   mkdir -p "$dir/bin"
-  GOOS=$goos GOARCH=$goarch CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$dir/bin/$exe" ./cmd/ccw
+  (cd be && GOOS=$goos GOARCH=$goarch CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$dir/bin/$exe" ./cmd/ccw)
   cat > "$dir/package.json" <<JSON
 {
   "name": "$name",

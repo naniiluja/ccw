@@ -6,7 +6,7 @@
 > The `in-progress`/`in-review` status is read by the session-start hook to re-load context after compact, keep status up to date.
 
 ## Milestones
-- M1: đóng các chỗ lệch best practice mà researcher và kiểm chứng bằng lệnh đã xác nhận (CI không chạy test, migration nuốt lỗi, log không có request ID, thiếu `IdleTimeout`).
+- M2: tách repo thành `be/` và `fe/`, dựng dashboard cho toàn bộ chức năng của ccw bằng shadcn và Origin UI (không chế component), phục vụ dưới `/ui/` từ binary Go.
 
 > Status: `todo` / `in-progress` / `in-review` / `done` / `blocked`. Lifecycle: `todo → in-progress → in-review → done`. A task becomes `in-review` once its code+test are complete and merged (by `/ccf:cook`, or implemented directly in the session); only `/ccf:updatespec` writes `done` after `/ccf:check` passes.
 > Write the status as a **bare word**, no `**bold**` around it. Emphasis carries no information and the status is matched as a whole word.

@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Runs every gate the coding rules are enforced by, locally and in CI:
-# gofmt, go vet, staticcheck (staticcheck.conf), gocyclo, and go test -race,
+# gofmt, go vet, staticcheck (be/staticcheck.conf), gocyclo, and go test -race,
 # which also runs the architecture and file size tests in
-# internal/httpapi/arch_test.go. Every gate runs; the script names each one
-# that failed and exits non-zero if any did.
+# be/internal/httpapi/arch_test.go. The Go gates run inside be/, where the
+# module lives; the frontend gates (pnpm install, lint, typecheck, test, build)
+# run inside fe/ once fe/package.json exists.
+# Every gate runs; the script names each one that failed and exits non-zero
+# if any did.
 #
 # The lint tools run through `go run module@version`, pinned below, so CI and
 # every machine use the same versions without adding them to go.mod.
@@ -17,7 +20,8 @@ GOCYCLO_VERSION=v0.6.0
 STATICCHECK_GOTOOLCHAIN=go1.27.1
 MAX_CYCLOMATIC=30
 
-cd "$(dirname "$0")/.."
+root=$(cd "$(dirname "$0")/.." && pwd)
+cd "$root/be" || exit 1
 
 failed=()
 
@@ -67,11 +71,27 @@ gocycloClean() {
 	return $status
 }
 
+echo "Go gates (be/)"
 gate "gofmt" gofmtClean
 gate "go vet" go vet ./...
 gate "staticcheck $STATICCHECK_VERSION" staticcheckClean
 gate "gocyclo -over $MAX_CYCLOMATIC" gocycloClean
 gate "go test -race (incl. architecture and size tests)" go test -race ./...
+
+# The frontend gates run inside fe/ and report failures the same way. pnpm
+# comes from the packageManager field of fe/package.json (corepack or
+# pnpm/action-setup in CI).
+if [ -f "$root/fe/package.json" ]; then
+	echo "Frontend gates (fe/)"
+	cd "$root/fe" || exit 1
+	gate "pnpm install --frozen-lockfile" pnpm install --frozen-lockfile
+	gate "pnpm lint" pnpm lint
+	gate "pnpm typecheck" pnpm typecheck
+	gate "pnpm test" pnpm test
+	gate "pnpm build" pnpm build
+else
+	echo "Frontend gates skipped: fe/package.json does not exist yet."
+fi
 
 if [ ${#failed[@]} -gt 0 ]; then
 	echo
