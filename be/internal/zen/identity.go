@@ -30,6 +30,9 @@ import (
 var callerHeaders = []string{
 	"X-Claude-Code-Session-Id", // Claude Code
 	"X-Session-Id",
+	"X-Conversation-Id",
+	"Conversation-Id",
+	"Session-Id",
 	"X-Opencode-Session", // an OpenCode client: already an upstream id
 }
 
@@ -60,11 +63,13 @@ func IsSessionID(v string) bool { return sesShape.MatchString(v) }
 func Caller(h http.Header, payload map[string]any) (value, source string) {
 	for _, name := range callerHeaders {
 		raw := strings.TrimSpace(h.Get(name))
-		if raw == "" {
-			continue
-		}
 		if raw != "" {
 			return raw, "header:" + strings.ToLower(name)
+		}
+	}
+	if turn := strings.TrimSpace(h.Get("X-Codex-Turn-Metadata")); turn != "" {
+		if sid := sessionInJSON(turn); sid != "" {
+			return sid, "header:x-codex-turn-metadata"
 		}
 	}
 	for _, f := range bodySessionFields {
@@ -93,7 +98,10 @@ func sessionInJSON(s string) string {
 	if json.Unmarshal([]byte(s), &rec) != nil {
 		return ""
 	}
-	return text(rec["session_id"])
+	if id := text(rec["session_id"]); id != "" {
+		return id
+	}
+	return text(rec["sessionId"])
 }
 
 func text(v any) string {

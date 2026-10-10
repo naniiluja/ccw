@@ -60,6 +60,20 @@ func (a *api) searcher() (websearch.Searcher, string) {
 	return a.web.s, a.web.unavailable
 }
 
+// lazySearch is the search service handed to another face of ccw (the Dia
+// bridge). It asks searcher on every search instead of once at startup: an
+// Antigravity account added after ccw started is then used, exactly as /v1
+// would use it, and a ccw with no search configured reads nothing up front.
+type lazySearch struct{ a *api }
+
+func (s lazySearch) Search(ctx context.Context, query string, count int) ([]websearch.Result, error) {
+	svc, why := s.a.searcher()
+	if svc == nil {
+		return nil, errors.New(why)
+	}
+	return svc.Search(ctx, query, count)
+}
+
 // hostedSearch answers a request that declares Anthropic's hosted web search
 // tool, for a provider that has none: it runs the search, and returns the request
 // rewritten for the model with the results in it, and the search for the answer to

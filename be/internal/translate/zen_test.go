@@ -157,3 +157,79 @@ func TestZenStatusTurnsAnUnknownModelIntoA404(t *testing.T) {
 		}
 	}
 }
+
+func TestZenStreamParallelCallsStaySeparate(t *testing.T) {
+	frame1 := `{"id":"mai-api-1","choices":[{"index":0,"delta":{"tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Paris\"}"}}]}}]}`
+	frame2 := `{"id":"mai-api-1","choices":[{"index":0,"delta":{"tool_calls":[{"id":"call_2","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"London\"}"}}]},"finish_reason":"tool_calls"}]}`
+	s := runZen(t, frame1, frame2, "[DONE]")
+	inOrder(t, s, `"id":"call_1"`, `"index":0`, `"id":"call_2"`, `"index":1`)
+	if strings.Contains(s, "get_weatherget_weather") {
+		t.Errorf("tool names were glued together:\n%s", s)
+	}
+}
+
+func TestCollectZenStreamParallelCallsStaySeparate(t *testing.T) {
+	frame1 := `{"id":"mai-api-1","choices":[{"index":0,"delta":{"tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Paris\"}"}}]}}]}`
+	frame2 := `{"id":"mai-api-1","choices":[{"index":0,"delta":{"tool_calls":[{"id":"call_2","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"London\"}"}}]},"finish_reason":"tool_calls"}]}`
+	whole := CollectZenStream(strings.NewReader(sse(frame1, frame2, "[DONE]")))
+	m := mustJSON(t, whole)
+	msg := asObj(asObj(firstOf(m["choices"]))["message"])
+	calls := list(msg["tool_calls"])
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 calls, got %d: %s", len(calls), string(whole))
+	}
+	c0 := asObj(calls[0])
+	c1 := asObj(calls[1])
+	if str(c0["id"]) != "call_1" || str(c1["id"]) != "call_2" {
+		t.Errorf("call ids wrong: %v, %v", c0["id"], c1["id"])
+	}
+	if str(asObj(c0["function"])["name"]) != "get_weather" || str(asObj(c1["function"])["name"]) != "get_weather" {
+		t.Errorf("tool names wrong: %v, %v", c0, c1)
+	}
+}
+
+func TestCollectZenStreamPreservesRefusal(t *testing.T) {
+	frame1 := `{"id":"a","choices":[{"index":0,"delta":{"refusal":"Cannot "}}]}`
+	frame2 := `{"id":"a","choices":[{"index":0,"delta":{"refusal":"comply"},"finish_reason":"stop"}]}`
+	whole := CollectZenStream(strings.NewReader(sse(frame1, frame2, "[DONE]")))
+	m := mustJSON(t, whole)
+	msg := asObj(asObj(firstOf(m["choices"]))["message"])
+	if str(msg["refusal"]) != "Cannot comply" {
+		t.Errorf("refusal = %v, want 'Cannot comply'", msg["refusal"])
+	}
+}
+
+func TestZenStatusConforms429RateLimit(t *testing.T) {
+	status, body := ZenStatus(429, []byte(`{"error":"Too Many Requests"}`))
+	if status != 429 {
+		t.Errorf("status = %d, want 429", status)
+	}
+	m := mustJSON(t, body)
+	errObj := asObj(m["error"])
+	if str(errObj["type"]) != "rate_limit_error" || str(errObj["code"]) != "rate_limit_exceeded" {
+		t.Errorf("429 error envelope not conformed: %s", string(body))
+	}
+}
+
+func TestZenStreamRenamesToolsBackToCaller(t *testing.T) {
+	frame := `{"id":"x","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"ls\"}"}}]}}],"finish_reason":"tool_calls"}`
+	rename := map[string]string{"shell": "Bash", "read": "Read"}
+	var out buf
+	ZenStreamToOpenAI(&out, strings.NewReader(sse(frame, "[DONE]")), rename)
+	s := out.String()
+	if !strings.Contains(s, `"name":"Bash"`) {
+		t.Errorf("shell not renamed to Bash: %s", s)
+	}
+}
+
+func TestCollectZenStreamRenamesToolsBackToCaller(t *testing.T) {
+	frame := `{"id":"x","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"ls\"}"}}]}}],"finish_reason":"tool_calls"}`
+	rename := map[string]string{"shell": "Bash", "read": "Read"}
+	whole := CollectZenStream(strings.NewReader(sse(frame, "[DONE]")), rename)
+	m := mustJSON(t, whole)
+	msg := asObj(asObj(firstOf(m["choices"]))["message"])
+	call := asObj(firstOf(list(msg["tool_calls"])))
+	if str(asObj(call["function"])["name"]) != "Bash" {
+		t.Errorf("name = %v, want Bash", asObj(call["function"])["name"])
+	}
+}

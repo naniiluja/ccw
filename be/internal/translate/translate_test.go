@@ -138,7 +138,7 @@ func TestAnthropicStreamToOpenAI(t *testing.T) {
 		"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":4}}\n\n" +
 		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 	var out buf
-	AnthropicStreamToOpenAI(&out, strings.NewReader(src))
+	AnthropicStreamToOpenAI(&out, strings.NewReader(src), Reply{})
 	s := out.String()
 	for _, want := range []string{`"role":"assistant"`, `"content":"Hel"`, `"name":"f"`, `"arguments":"{\"a\":"`,
 		`"finish_reason":"tool_calls"`, `"prompt_tokens":7`, `"completion_tokens":4`, "data: [DONE]"} {
@@ -167,6 +167,46 @@ func TestOpenAIStreamToAnthropic(t *testing.T) {
 			t.Fatalf("stream missing %s after byte %d:\n%s", want, pos, s)
 		}
 		pos += i
+	}
+}
+
+func TestAnthropicToolNameRoundTrip(t *testing.T) {
+	cases := []struct{ declared, clean string }{
+		{"xd://lsp", "xd___lsp"},
+		{"a/b", "a_b"},
+		{"read", "read"},
+	}
+	for _, c := range cases {
+		if got := AnthropicToolName(c.declared); got != c.clean {
+			t.Errorf("AnthropicToolName(%q) = %q, want %q", c.declared, got, c.clean)
+		}
+	}
+
+	in := `{"model":"dia/claude-opus-4-8","max_tokens":16,"messages":[{"role":"user","content":"hi"}],
+	 "tools":[{"type":"function","function":{"name":"xd://lsp","description":"d",
+	 "parameters":{"type":"object","properties":{}}}}]}`
+	toAnthropic, err := OpenAIToAnthropic([]byte(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire := mustJSON(t, toAnthropic)["tools"].([]any)[0].(map[string]any)["name"].(string)
+	if wire != "xd___lsp" || strings.ContainsAny(wire, ":/") || len(wire) > 64 {
+		t.Errorf("anthropic tool name = %q, want a clean xd___lsp", wire)
+	}
+
+	reply := Reply{Tools: map[string]string{"xd___lsp": "xd://lsp"}}
+	back, err := OpenAIResponseToAnthropic([]byte(`{"id":"c1","model":"m","choices":[{"index":0,"message":{
+	 "role":"assistant","tool_calls":[{"index":0,"id":"c1","type":"function",
+	 "function":{"name":"xd___lsp","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`), reply)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(j(mustJSON(t, back)["content"]), `"name":"xd://lsp"`) {
+		t.Errorf("tool_use name not restored: %s", back)
+	}
+
+	if got := reply.toolName("read"); got != "read" {
+		t.Errorf("toolName(read) = %q, want read", got)
 	}
 }
 
@@ -218,6 +258,18 @@ func TestOpenAIToResponsesAndBack(t *testing.T) {
 		if !strings.Contains(s, want) {
 			t.Errorf("chunks missing %s:\n%s", want, s)
 		}
+	}
+}
+
+func TestResponsesStreamPreservesRefusal(t *testing.T) {
+	src := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"m\"}}\n\n" +
+		"data: {\"type\":\"response.refusal.delta\",\"delta\":\"Cannot comply\"}\n\n" +
+		"data: {\"type\":\"response.completed\",\"response\":{}}\n\n"
+	var o buf
+	ResponsesStreamToOpenAI(&o, strings.NewReader(src))
+	s := o.String()
+	if !strings.Contains(s, `"refusal":"Cannot comply"`) {
+		t.Errorf("refusal missing:\n%s", s)
 	}
 }
 

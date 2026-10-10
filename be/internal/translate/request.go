@@ -183,7 +183,7 @@ func oaToolsToAnthropic(tools []any) []any {
 		if schema == nil {
 			schema = obj{"type": "object", "properties": obj{}}
 		}
-		td := obj{"name": fn["name"], "input_schema": schema}
+		td := obj{"name": AnthropicToolName(str(fn["name"])), "input_schema": schema}
 		if d := str(fn["description"]); d != "" {
 			td["description"] = d
 		}
@@ -191,6 +191,32 @@ func oaToolsToAnthropic(tools []any) []any {
 	}
 	return ts
 }
+
+// AnthropicToolName maps an OpenAI tool name to one the Messages API accepts.
+// Anthropic requires ^[a-zA-Z0-9_-]{1,64}$, and clients name their tools with
+// other characters (omp uses `xd://lsp`), which the upstream answers with
+// "Request contains an unrecognized tool". Every character outside the allowed
+// set becomes an underscore, so two distinct names still differ.
+func AnthropicToolName(name string) string {
+	cleaned := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+			return r
+		default:
+			return '_'
+		}
+	}, name)
+	if len(cleaned) > maxToolNameLen {
+		cleaned = cleaned[:maxToolNameLen]
+	}
+	if cleaned == "" {
+		return "tool"
+	}
+	return cleaned
+}
+
+// maxToolNameLen is the ceiling Anthropic puts on a tool name.
+const maxToolNameLen = 64
 
 // appendMsg adds content under role, merging into the previous message when it
 // has the same role: Anthropic expects user and assistant to alternate, and an
@@ -345,7 +371,7 @@ func oaToolChoice(v any) obj {
 		}
 	case obj:
 		if name := str(asObj(c["function"])["name"]); name != "" {
-			return obj{"type": "tool", "name": name}
+			return obj{"type": "tool", "name": AnthropicToolName(name)}
 		}
 	}
 	return nil

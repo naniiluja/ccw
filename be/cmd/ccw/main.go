@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/naniiluja/ccw/internal/auth"
+	"github.com/naniiluja/ccw/internal/diabridge"
 	"github.com/naniiluja/ccw/internal/httpapi"
 	"github.com/naniiluja/ccw/internal/store"
 )
@@ -22,6 +23,8 @@ func main() {
 	dbPath := flag.String("db", "ccw.db", "path to the database file")
 	reset := flag.Bool("reset-password", false, "generate a new sign-in password, print it once, store only its hash, then exit")
 	insecure := flag.Bool("insecure-no-auth", false, "start with no sign-in gate; every caller reaches every stored credential")
+	diaFront := flag.String("dia-bridge-front", diabridge.DefaultFrontAddr, "Dia bridge front address that Dia's claude calls (empty to disable)")
+	diaBack := flag.String("dia-bridge-back", diabridge.DefaultBackAddr, "Dia bridge back address that ccw's dia provider calls")
 	flag.Parse()
 
 	// Structured lines on stderr. The log package's output goes through the
@@ -55,7 +58,26 @@ func main() {
 		log.Fatal(err)
 	}
 
-	srv := newHTTPServer(*addr, httpapi.NewWithAuth(s, nil, authCfg))
+	// The api is built first so the bridge can share its search service: Dia's
+	// gateway refuses the hosted search tool, and the bridge answers a search
+	// with the same provider /v1 uses rather than dropping it.
+	ccw, handler := httpapi.NewAPI(s, nil, authCfg)
+
+	// Dia's own claude is pointed at the bridge's front address (see
+	// scripts/dia-patch.sh), and the dia provider in the registry calls the back
+	// address. An empty front address leaves the bridge off while keeping the
+	// dia provider's base address intact.
+	if *diaFront != "" {
+		bridge := diabridge.New()
+		bridge.SetSearch(ccw.Searcher())
+		if err := bridge.Start(*diaFront, *diaBack); err != nil {
+			log.Fatalf("start dia bridge: %v", err)
+		}
+		defer bridge.Close()
+		slog.Info("dia.bridge.listen", "front", bridge.Addr(), "back", bridge.BackAddr())
+	}
+
+	srv := newHTTPServer(*addr, handler)
 	slog.Info("server.listen", "url", "http://"+*addr)
 	if err := srv.ListenAndServe(); err != nil {
 		log.Fatal(err)

@@ -19,9 +19,10 @@ Philosophy: chọn stack **ổn định nhất, phổ biến nhất, ít lỗi n
 
 ## Cấu hình runtime
 - Biến môi trường (đối chiếu bằng `grep -rhoE 'CCW_[A-Z_]+' --include='*.go' internal cmd | sort -u`): `CCW_PASSWORD` (tối thiểu 12 ký tự, ưu tiên hơn mật khẩu đã lưu), `CCW_API_TOKEN` (master token cho máy), `CCW_SESSION_KEY`, `CCW_SESSION_TTL`, `CCW_INSECURE_NO_AUTH`, `CCW_OWNER_LOOPBACK`, `CCW_TZ`, `CCW_SEARCH_PROVIDER`, `CCW_SEARCH_KEY`, `CCW_SEARCH_URL`, `CCW_SEARCH_COUNT`, `CCW_SEARCH_MODEL`, `CCW_ANTIGRAVITY_CLIENT_SECRET`.
-- Flag: `-addr` (mặc định `127.0.0.1:20130`), `-db` (mặc định `ccw.db`), `-reset-password` (sinh mật khẩu mới, in một lần, lưu bản băm, rồi thoát), `-insecure-no-auth`.
+- Flag: `-addr` (mặc định `127.0.0.1:20130`), `-db` (mặc định `ccw.db`), `-reset-password` (sinh mật khẩu mới, in một lần, lưu bản băm, rồi thoát), `-insecure-no-auth`, `-dia-bridge-front` (mặc định `127.0.0.1:20139`, để rỗng thì tắt bridge), `-dia-bridge-back` (mặc định `127.0.0.1:20140`).
 - Lần chạy đầu không có `CCW_PASSWORD` và DB chưa có `password_hash`: ccw tự sinh mật khẩu, in một lần ra stderr, chỉ lưu bản băm.
-- Đã gỡ: `CCW_TOTP_SECRET`, `-enroll`, `-show-totp` (đăng nhập TOTP), `CCW_ARENA_URL` (ranking), lệnh con `contract-reset` (contract lab), cấu hình notify.
+- Đã gỡ: `CCW_TOTP_SECRET`, `-enroll`, `-show-totp` (đăng nhập TOTP), `CCW_ARENA_URL` (ranking), lệnh con `contract-reset` (contract lab), cấu hình notify, `-sniff-dia`, `-sniff-dia-addr` (sniffer HTTP một đầu, thay bằng `diabridge`).
+- Biến môi trường của bridge: `DIA_HANDLER_PORT_FILE` (mặc định `/tmp/dia-handler.json`, nơi handler đã vá ghi `{port, token}`; test đặt để không đụng file thật).
 
 ## Rules
 - Không thêm thư viện ngoài danh sách trên khi chưa so sánh best practice qua Context7 và cập nhật file này. `[review]` `git diff go.mod`.

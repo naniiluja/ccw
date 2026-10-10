@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -173,13 +174,45 @@ func (a *api) sendLogged(r *http.Request, p provider.Provider, conn store.Connec
 	return resp, err
 }
 
+// recheckGate lets a 429 force one quota read per account per interval, so a burst
+// of 429s (fake ones included) cannot hammer a provider's quota endpoint.
+type recheckGate struct {
+	mu   sync.Mutex
+	last map[string]time.Time
+}
+
+const quotaRecheckEvery = 30 * time.Second
+
+func (g *recheckGate) allow(id string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.last == nil {
+		g.last = map[string]time.Time{}
+	}
+	if time.Since(g.last[id]) < quotaRecheckEvery {
+		return false
+	}
+	g.last[id] = time.Now()
+	return true
+}
+
 // classify429 reads the account's quota after a 429: a 429 answered in a
 // blink while the model's quota is far from spent is the provider refusing
 // the content (a fail-fast dressed as a rate limit), not a real limit.
 func (a *api) classify429(id int64, conn store.Connection, model string, ms int64) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	left := quotaLeft(a.quotaFor(ctx, conn, false), model)
+	answered := time.Now() // this runs as the 429 arrives
+	q := a.quotaFor(ctx, conn, false)
+	left := quotaLeft(q, model)
+	// The cache says quota is left but was read before this 429 arrived: read it
+	// now, so a spent account is parked from the next request on rather than from
+	// the next quota read.
+	if left > 0 && q.doneAt.Before(answered) && a.quotaRecheck.allow(conn.ID) {
+		if fresh := a.quotaFor(ctx, conn, true); fresh.Error == "" && len(fresh.Windows) > 0 {
+			left = quotaLeft(fresh, model)
+		}
+	}
 	class := ClassRateLimit
 	if left > fakeQuotaLeft && ms < fakeFastMs {
 		class = ClassFake429

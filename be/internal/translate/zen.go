@@ -53,8 +53,17 @@ const zenIDPrefix = "chatcmpl-"
 // read. A comment frame (the upstream's keep-alive) passes as it came, so a long
 // thinking phase still moves bytes. A stream that stops with neither [DONE] nor
 // a finish reason was cut, and ends in an error instead of passing for complete.
-func ZenStreamToOpenAI(dst Flusher, src io.Reader) {
-	s := &zenStream{opened: map[int64]bool{}, finish: map[int64]string{}, tools: map[int64]bool{}}
+func ZenStreamToOpenAI(dst Flusher, src io.Reader, rename ...map[string]string) {
+	var rmap map[string]string
+	if len(rename) > 0 {
+		rmap = rename[0]
+	}
+	s := &zenStream{
+		opened: map[int64]bool{},
+		finish: map[int64]string{},
+		tools:  map[int64]bool{},
+		rename: rmap,
+	}
 	write := func(v any) {
 		b, _ := json.Marshal(v)
 		io.WriteString(dst, "data: "+string(b)+"\n\n")
@@ -75,8 +84,18 @@ func ZenStreamToOpenAI(dst Flusher, src io.Reader) {
 		if err != nil {
 			return true
 		}
-		if e := asObj(ch["error"]); e != nil {
-			write(zenError(str(e["message"]), str(e["type"])))
+		if errVal, hasErr := ch["error"]; hasErr && errVal != nil {
+			var errMsg, errType string
+			switch ev := errVal.(type) {
+			case obj:
+				errMsg, errType = str(ev["message"]), str(ev["type"])
+			case string:
+				errMsg = ev
+			}
+			if errMsg == "" {
+				errMsg = str(ch["message"])
+			}
+			write(zenError(errMsg, errType))
 			s.failed = true
 			return false
 		}
@@ -114,14 +133,14 @@ end:
 
 // ZenResponsesStreamToOpenAI does the same for the Responses API: its events
 // become chat chunks first, then leave through the same conformer.
-func ZenResponsesStreamToOpenAI(dst Flusher, src io.Reader) {
+func ZenResponsesStreamToOpenAI(dst Flusher, src io.Reader, rename ...map[string]string) {
 	pr, pw := io.Pipe()
 	defer pr.Close()
 	go func() {
 		defer pw.Close()
 		ResponsesStreamToOpenAI(pipeFlush{pw}, src)
 	}()
-	ZenStreamToOpenAI(dst, pr)
+	ZenStreamToOpenAI(dst, pr, rename...)
 }
 
 type pipeFlush struct{ *io.PipeWriter }
@@ -149,7 +168,66 @@ type zenStream struct {
 	opened    map[int64]bool
 	finish    map[int64]string
 	tools     map[int64]bool
+	toolIDs   map[int64]map[string]int64
+	toolUsed  map[int64]map[int64]bool
+	rename    map[string]string
 	failed    bool
+}
+
+func (s *zenStream) normalizeToolCalls(choiceIdx int64, dRaw obj) {
+	if dRaw == nil {
+		return
+	}
+	tcs := list(dRaw["tool_calls"])
+	if len(tcs) == 0 {
+		return
+	}
+	if s.toolIDs == nil {
+		s.toolIDs = map[int64]map[string]int64{}
+		s.toolUsed = map[int64]map[int64]bool{}
+	}
+	known := s.toolIDs[choiceIdx]
+	if known == nil {
+		known = map[string]int64{}
+		s.toolIDs[choiceIdx] = known
+	}
+	used := s.toolUsed[choiceIdx]
+	if used == nil {
+		used = map[int64]bool{}
+		s.toolUsed[choiceIdx] = used
+	}
+	for _, raw := range tcs {
+		tc := asObj(raw)
+		if tc == nil {
+			continue
+		}
+		id := str(tc["id"])
+		var at int64
+		if tc["index"] != nil {
+			at = num(tc["index"])
+		} else if id != "" {
+			if idx, ok := known[id]; ok {
+				at = idx
+			} else {
+				cand := int64(0)
+				for used[cand] {
+					cand++
+				}
+				known[id] = cand
+				at = cand
+			}
+		} else if len(used) == 1 {
+			for idx := range used {
+				at = idx
+				break
+			}
+		}
+		used[at] = true
+		if id != "" {
+			known[id] = at
+		}
+		tc["index"] = at
+	}
 }
 
 func (s *zenStream) chunk(choices []any) obj {
@@ -189,7 +267,9 @@ func (s *zenStream) feed(raw obj) []obj {
 			continue
 		}
 		idx := num(ch["index"])
-		delta := zenDelta(asObj(ch["delta"]))
+		dRaw := asObj(ch["delta"])
+		s.normalizeToolCalls(idx, dRaw)
+		delta := zenDelta(dRaw, s.rename)
 		finish := zenFinish(str(ch["finish_reason"]))
 		if finish != "" {
 			s.finish[idx] = finish
@@ -263,7 +343,7 @@ func zenFinish(raw string) string {
 }
 
 // zenDelta keeps the fields of a delta that the shape names.
-func zenDelta(raw obj) obj {
+func zenDelta(raw obj, rename ...map[string]string) obj {
 	out := obj{}
 	if raw == nil {
 		return out
@@ -297,7 +377,7 @@ func zenDelta(raw obj) obj {
 	}
 	var calls []any
 	for _, c := range list(raw["tool_calls"]) {
-		if call := zenToolCall(asObj(c)); call != nil {
+		if call := zenToolCall(asObj(c), rename...); call != nil {
 			calls = append(calls, call)
 		}
 	}
@@ -312,7 +392,7 @@ func zenDelta(raw obj) obj {
 	return out
 }
 
-func zenToolCall(raw obj) obj {
+func zenToolCall(raw obj, rename ...map[string]string) obj {
 	if raw == nil {
 		return nil
 	}
@@ -327,6 +407,9 @@ func zenToolCall(raw obj) obj {
 		kept := obj{}
 		for _, k := range []string{"name", "arguments"} {
 			if s, ok := fn[k].(string); ok {
+				if k == "name" && len(rename) > 0 && rename[0] != nil && rename[0][s] != "" {
+					s = rename[0][s]
+				}
 				kept[k] = s
 			}
 		}
@@ -377,8 +460,12 @@ func zenUsage(raw obj) obj {
 // carried is folded in (text, reasoning under every name, kept fields, tool calls,
 // finish reason, usage). Choices are folded by index. A stream that ended in an
 // error, or carried no answer, comes back as an error body.
-func CollectZenStream(src io.Reader) []byte {
-	z := &zenCollector{choices: map[int64]*zenChoice{}}
+func CollectZenStream(src io.Reader, rename ...map[string]string) []byte {
+	var rmap map[string]string
+	if len(rename) > 0 {
+		rmap = rename[0]
+	}
+	z := &zenCollector{choices: map[int64]*zenChoice{}, rename: rmap}
 	err := sseEvents(src, z.event)
 	if z.failure != nil {
 		b, _ := json.Marshal(obj{"error": z.failure})
@@ -413,21 +500,25 @@ func CollectZenStream(src io.Reader) []byte {
 	return b
 }
 
-// zenCollector is the state CollectZenStream folds the chunks into.
 type zenCollector struct {
 	choices   map[int64]*zenChoice
 	id, model string
 	created   int64
 	usage     obj
 	failure   obj
+	rename    map[string]string
 }
 
 // zenChoice is one choice of a collected Zen answer.
 type zenChoice struct {
 	text      strings.Builder
 	reasoning strings.Builder
+	refusal   strings.Builder
 	kept      map[string][]obj
 	tools     map[int64]*obj
+	toolIDs   map[string]int64
+	toolUsed  map[int64]bool
+	rename    map[string]string
 	finish    string
 	gotText   bool
 }
@@ -469,7 +560,13 @@ func (z *zenCollector) event(_, data string) bool {
 func (z *zenCollector) choice(idx int64) *zenChoice {
 	cc := z.choices[idx]
 	if cc == nil {
-		cc = &zenChoice{kept: map[string][]obj{}, tools: map[int64]*obj{}}
+		cc = &zenChoice{
+			kept:     map[string][]obj{},
+			tools:    map[int64]*obj{},
+			toolIDs:  map[string]int64{},
+			toolUsed: map[int64]bool{},
+			rename:   z.rename,
+		}
 		z.choices[idx] = cc
 	}
 	return cc
@@ -481,6 +578,9 @@ func (cc *zenChoice) fold(cm obj) {
 	if s, ok := d["content"].(string); ok {
 		cc.text.WriteString(s)
 		cc.gotText = true
+	}
+	if s, ok := d["refusal"].(string); ok {
+		cc.refusal.WriteString(s)
 	}
 	if s, ok := d[zenThinkingOut[0]].(string); ok {
 		cc.reasoning.WriteString(s)
@@ -516,26 +616,62 @@ func (cc *zenChoice) keep(k string, it obj) {
 	cc.kept[k] = append(cc.kept[k], it)
 }
 
-// toolFragment adds one tool call fragment to the call at its index.
 func (cc *zenChoice) toolFragment(tc obj) {
-	at := num(tc["index"])
+	if tc == nil {
+		return
+	}
+	id := str(tc["id"])
+	var at int64
+	if tc["index"] != nil {
+		at = num(tc["index"])
+	} else if id != "" {
+		if idx, ok := cc.toolIDs[id]; ok {
+			at = idx
+		} else {
+			cand := int64(0)
+			for cc.toolUsed[cand] {
+				cand++
+			}
+			cc.toolIDs[id] = cand
+			at = cand
+		}
+	} else if len(cc.toolUsed) == 1 {
+		for idx := range cc.toolUsed {
+			at = idx
+			break
+		}
+	}
+	cc.toolUsed[at] = true
+	if id != "" {
+		cc.toolIDs[id] = at
+	}
+
 	slot := cc.tools[at]
 	if slot == nil {
 		slot = &obj{"id": "", "type": "function", "function": obj{"name": "", "arguments": ""}}
 		cc.tools[at] = slot
 	}
-	if s := str(tc["id"]); s != "" {
-		(*slot)["id"] = s
+	if id != "" {
+		(*slot)["id"] = id
 	}
 	fn := asObj(tc["function"])
-	sf := asObj((*slot)["function"])
-	sf["name"] = str(sf["name"]) + str(fn["name"])
-	sf["arguments"] = str(sf["arguments"]) + str(fn["arguments"])
+	if fn != nil {
+		name := str(fn["name"])
+		if cc.rename != nil && cc.rename[name] != "" {
+			name = cc.rename[name]
+		}
+		sf := asObj((*slot)["function"])
+		sf["name"] = str(sf["name"]) + name
+		sf["arguments"] = str(sf["arguments"]) + str(fn["arguments"])
+	}
 }
 
 // result is the collected choice as a chat.completion choice at idx.
 func (cc *zenChoice) result(idx int64) obj {
 	msg := obj{"role": "assistant", "content": cc.text.String(), "refusal": nil}
+	if cc.refusal.Len() > 0 {
+		msg["refusal"] = cc.refusal.String()
+	}
 	if cc.reasoning.Len() > 0 {
 		for _, k := range zenThinkingOut {
 			msg[k] = cc.reasoning.String()
@@ -569,14 +705,44 @@ func (cc *zenChoice) result(idx int64) obj {
 // answers it with 401 ModelError, which a client reads as a bad key; OpenAI's own
 // answer is 404 model_not_found. Any other answer is returned as it came.
 func ZenStatus(status int, body []byte) (int, []byte) {
-	if status != 401 {
+	if status == 401 {
+		m, err := decode(body)
+		e := asObj(m["error"])
+		if err == nil && e != nil && str(e["type"]) == "ModelError" {
+			b, _ := json.Marshal(obj{"error": obj{"message": str(e["message"]), "type": "invalid_request_error", "code": "model_not_found"}})
+			return 404, b
+		}
 		return status, body
 	}
+	if status == 429 {
+		msg := extractZenErrorMessage(body, "rate limit exceeded")
+		b, _ := json.Marshal(obj{"error": obj{"message": msg, "type": "rate_limit_error", "code": "rate_limit_exceeded"}})
+		return 429, b
+	}
+	return status, body
+}
+
+func extractZenErrorMessage(body []byte, fallback string) string {
 	m, err := decode(body)
-	e := asObj(m["error"])
-	if err != nil || e == nil || str(e["type"]) != "ModelError" {
-		return status, body
+	if err != nil {
+		if s := strings.TrimSpace(string(body)); s != "" {
+			return s
+		}
+		return fallback
 	}
-	b, _ := json.Marshal(obj{"error": obj{"message": str(e["message"]), "type": "invalid_request_error", "code": "model_not_found"}})
-	return 404, b
+	if s := str(m["error"]); s != "" {
+		return s
+	}
+	if e := asObj(m["error"]); e != nil {
+		if s := str(e["message"]); s != "" {
+			return s
+		}
+	}
+	if s := str(m["message"]); s != "" {
+		return s
+	}
+	if s := str(m["detail"]); s != "" {
+		return s
+	}
+	return fallback
 }

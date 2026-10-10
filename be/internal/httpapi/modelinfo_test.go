@@ -246,3 +246,69 @@ func TestCloudflareListsFromModelSearch(t *testing.T) {
 		t.Errorf("table = %s", b)
 	}
 }
+
+// Antigravity serves a different list per account: the models only a later
+// account has must still be synced, and a model no account lists any more is
+// still dropped.
+func TestAntigravitySyncsTheModelsOfEveryAccount(t *testing.T) {
+	var mu sync.Mutex
+	lists := map[string]string{
+		"Bearer fake-token-old": `{"models":{"claude-sonnet-4-6":{},"gemini-3.8-flash-high":{},"gemini-3.8-flash-low":{}}}`,
+		"Bearer fake-token-new": `{"models":{"claude-opus-5-5-high":{},"claude-opus-5-5-low":{},"claude-opus-5-5-medium":{},"claude-sonnet-5-5-high":{},"claude-sonnet-5-5-low":{},"claude-sonnet-5-5-medium":{},"gemini-3.8-flash-high":{}}}`,
+	}
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, ":loadCodeAssist"):
+			w.Write([]byte(`{"cloudaicompanionProject":"p"}`))
+		case strings.HasSuffix(r.URL.Path, ":fetchAvailableModels"):
+			mu.Lock()
+			defer mu.Unlock()
+			w.Write([]byte(lists[r.Header.Get("Authorization")]))
+		}
+	}))
+	defer up.Close()
+	old := antigravityProdURL
+	antigravityProdURL = up.URL
+	defer func() { antigravityProdURL = old }()
+	s, _ := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	defer s.Close()
+	// The first account is the one without the 5.5 models.
+	s.CreateConnection("antigravity", "old", "fake-token-old")
+	s.CreateConnection("antigravity", "new", "fake-token-new")
+	h := New(s, map[string]string{"antigravity": up.URL})
+
+	stored := func() []string {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, loopbackRequest("GET", "/providers/antigravity/model-table?refresh=1", nil))
+		if rec.Code != 200 {
+			t.Fatalf("model-table = %d %s", rec.Code, rec.Body)
+		}
+		list, err := s.ListModels("antigravity")
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := []string{}
+		for _, m := range list {
+			out = append(out, m.Model)
+		}
+		return out
+	}
+	want := []string{"claude-opus-5-5", "claude-sonnet-4-6", "claude-sonnet-5-5", "gemini-3.8-flash"}
+	if got := stored(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("stored = %v, want %v", got, want)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, loopbackRequest("GET", "/providers/antigravity/model-table", nil))
+	if !strings.Contains(rec.Body.String(), `"claude-opus-5-5":["high","medium","low"]`) {
+		t.Errorf("table variants = %s", rec.Body)
+	}
+
+	// The 4.6 model goes from the only account that had it: it is dropped.
+	mu.Lock()
+	lists["Bearer fake-token-old"] = `{"models":{"gemini-3.8-flash-high":{}}}`
+	mu.Unlock()
+	want = []string{"claude-opus-5-5", "claude-sonnet-5-5", "gemini-3.8-flash"}
+	if got := stored(); !reflect.DeepEqual(got, want) {
+		t.Errorf("after the 4.6 model left: %v, want %v", got, want)
+	}
+}

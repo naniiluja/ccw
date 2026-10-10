@@ -29,10 +29,13 @@ type Profile struct {
 // the caller wrote it.
 var profiles = []Profile{
 	{ID: "big-pickle"},
-	{ID: "deepseek-v4-flash-free"},
-	{ID: "ling-3.0-flash-fin-free"},
+	{ID: "deepseek-v4-flash-free"}, // 404: model dropped upstream
+	{ID: "exo-free", Pin: map[string]any{"tool_choice": "auto"}},
+	{ID: "fledge-alpha-free"},
+	{ID: "ling-3.0-flash-fin-free"}, // 400: endpoint unavailable upstream
+	{ID: "ling-3.1-flash-free"},
 	{ID: "longcat-2.5-preview-free"},
-	{ID: "mimo-v2.5-free"},
+	{ID: "mimo-v2.5-free"}, // 404: model dropped upstream
 	{ID: "mimo-v2.6-flash-free"},
 	{ID: "nemotron-3-ultra-free"},
 	{ID: "nemotron-3.5-lightning-free"},

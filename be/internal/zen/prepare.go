@@ -11,6 +11,16 @@ import (
 // refused with 403 on the gated models.
 var requiredTools = []string{"read", "shell"}
 
+var callerCapabilities = map[string]string{
+	"Read":              "read_files",
+	"Bash":              "run_shell",
+	"read_file":         "read_files",
+	"shell":             "run_shell",
+	"run_shell_command": "run_shell",
+	"read":              "read_files",
+	"bash":              "run_shell",
+}
+
 func decodeObject(body []byte) (map[string]any, error) {
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
@@ -36,22 +46,19 @@ func stripCaller(m map[string]any) {
 // original request already), and the gate's two conditions are added: the
 // required tools and a streaming call. A caller who asked for a whole answer
 // still gets one, assembled from the stream by the relay.
-func PrepareChat(body []byte, pin map[string]any) ([]byte, error) {
+func PrepareChat(body []byte, pin map[string]any) ([]byte, map[string]string, error) {
 	m, err := decodeObject(body)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	stripCaller(m)
 	for k, v := range pin {
 		m[k] = v
 	}
-	tools, _ := m["tools"].([]any)
-	for i, t := range tools {
-		tools[i] = nestTool(t)
-	}
-	m["tools"] = withRequired(tools, func(name string) any { return chatTool(name) })
+	rename := prepareTools(m)
 	m["stream"] = true
-	return json.Marshal(m)
+	b, err := json.Marshal(m)
+	return b, rename, err
 }
 
 // PrepareSystemOne turns a System One body into one the upstream accepts. It is
@@ -89,6 +96,97 @@ func withRequired(tools []any, build func(name string) any) []any {
 		}
 	}
 	return tools
+}
+
+func prepareTools(m map[string]any) map[string]string {
+	tools, _ := m["tools"].([]any)
+	for i, t := range tools {
+		tools[i] = nestTool(t)
+	}
+	candidate := map[string]any{}
+	candidateName := map[string]string{}
+	ambiguous := map[string]bool{}
+
+	for _, t := range tools {
+		name := toolName(t)
+		cap := callerCapabilities[name]
+		if cap == "" {
+			continue
+		}
+		if candidate[cap] != nil {
+			ambiguous[cap] = true
+		} else {
+			candidate[cap] = t
+			candidateName[cap] = name
+		}
+	}
+
+	renamed := map[string]string{}
+	forward := map[string]string{}
+
+	for _, gate := range requiredTools {
+		var cap string
+		if gate == "read" {
+			cap = "read_files"
+		} else if gate == "shell" {
+			cap = "run_shell"
+		}
+		found := candidate[cap]
+		origName := candidateName[cap]
+		if found == nil || ambiguous[cap] || origName == gate {
+			continue
+		}
+		setToolName(found, gate)
+		renamed[gate] = origName
+		forward[origName] = gate
+	}
+
+	m["tools"] = withRequired(tools, func(name string) any { return chatTool(name) })
+	renameMentions(m, forward)
+	return renamed
+}
+
+func setToolName(t any, name string) {
+	if m, ok := t.(map[string]any); ok {
+		if fn, isFn := m["function"].(map[string]any); isFn {
+			fn["name"] = name
+		} else {
+			m["name"] = name
+		}
+	}
+}
+
+func renameMentions(m map[string]any, forward map[string]string) {
+	if len(forward) == 0 {
+		return
+	}
+	msgs, _ := m["messages"].([]any)
+	for _, msg := range msgs {
+		mm, ok := msg.(map[string]any)
+		if !ok {
+			continue
+		}
+		calls, _ := mm["tool_calls"].([]any)
+		for _, c := range calls {
+			cm, ok := c.(map[string]any)
+			if !ok {
+				continue
+			}
+			fn, ok := cm["function"].(map[string]any)
+			if ok {
+				if n, ok := fn["name"].(string); ok && forward[n] != "" {
+					fn["name"] = forward[n]
+				}
+			}
+		}
+	}
+	if tc, ok := m["tool_choice"].(map[string]any); ok {
+		if fn, ok := tc["function"].(map[string]any); ok {
+			if n, ok := fn["name"].(string); ok && forward[n] != "" {
+				fn["name"] = forward[n]
+			}
+		}
+	}
 }
 
 // toolName reads a tool's name, flat or nested under "function".

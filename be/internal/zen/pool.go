@@ -155,8 +155,10 @@ func NewSessionID(now time.Time) string {
 // key they would mint a session per request.
 var volatile = map[string]bool{
 	"request_id": true, "requestId": true, "id": true, "timestamp": true, "ts": true,
-	"created": true, "created_at": true, "nonce": true, "client_request_id": true,
-	"session_id": true, "sessionId": true, "conversation_id": true, "conversationId": true,
+	"trace_id": true, "traceId": true, "created": true, "created_at": true, "nonce": true,
+	"client_request_id": true, "session_id": true, "sessionId": true,
+	"conversation_id": true, "conversationId": true, "thread_id": true, "threadId": true,
+	"stream": true, "stream_options": true, "seed": true,
 	"user": true, "metadata": true,
 }
 

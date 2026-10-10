@@ -147,6 +147,42 @@ func uuid4() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }
 
+// antigravityCatalog lists the models of every given account and merges them:
+// Antigravity serves a different set per account, so reading one account hides
+// the models only the others have. It reports ok when at least one account
+// answered; an account that fails adds nothing, and the model it alone listed
+// drops out only once no account lists it.
+func (a *api) antigravityCatalog(ctx context.Context, conns []store.Connection) ([]string, []byte, bool) {
+	seen := map[string]bool{}
+	entries := map[string]json.RawMessage{}
+	ids := []string{}
+	ok := false
+	for _, c := range conns {
+		got, raw, answered := a.antigravityModels(ctx, c)
+		if !answered {
+			continue
+		}
+		ok = true
+		var d struct {
+			Models map[string]json.RawMessage `json:"models"`
+		}
+		json.Unmarshal(raw, &d)
+		for _, id := range got {
+			if !seen[id] {
+				seen[id] = true
+				ids = append(ids, id)
+				entries[id] = d.Models[id]
+			}
+		}
+	}
+	if !ok {
+		return nil, nil, false
+	}
+	sort.Strings(ids)
+	merged, _ := json.Marshal(map[string]any{"models": entries})
+	return ids, merged, true
+}
+
 // antigravityModels lists an account's models with fetchAvailableModels.
 func (a *api) antigravityModels(ctx context.Context, conn store.Connection) ([]string, []byte, bool) {
 	token, err := a.secretFor(ctx, conn.ID)
@@ -345,7 +381,17 @@ func newZenState() zenState {
 // the request is built to where its headers are set.
 type zenSessionKey struct{}
 
-type zenSession struct{ id, key string }
+type zenSession struct {
+	id, key string
+	rename  map[string]string
+}
+
+func zenRenameOf(r *http.Request) map[string]string {
+	if s := zenSessionOf(r); s != nil {
+		return s.rename
+	}
+	return nil
+}
 
 func zenSessionOf(r *http.Request) *zenSession {
 	s, _ := r.Context().Value(zenSessionKey{}).(*zenSession)
@@ -394,16 +440,28 @@ func (a *api) zenRequest(r *http.Request, body []byte, client, model string) (se
 	}
 	var payload map[string]any
 	json.Unmarshal(body, &payload)
+	if choice, ok := payload["tool_choice"].(string); ok && choice == "none" {
+		if pChoice, ok := pin["tool_choice"].(string); ok && pChoice != "none" {
+			return nil, "", "", fmt.Errorf("model %s does not support tool_choice none", id)
+		}
+	}
 	caller, source := zen.Caller(r.Header, payload)
 	sess := a.zen.pool.For(caller, source, body)
 	noteZenSession(r, sess)
 	a.logFor(r.Context()).Info("zen.session.use", "model", id, "session", sess.ID, "uses", sess.Uses, "caller", zenWho(sess))
 
+	var rename map[string]string
 	if ep == zen.Responses {
-		send, err = zen.PrepareResponses(hub, sess.ID, pin)
+		send, rename, err = zen.PrepareResponses(hub, sess.ID, pin)
+		if s := zenSessionOf(r); s != nil {
+			s.rename = rename
+		}
 		return send, "responses", translate.ZenResponses, err
 	}
-	send, err = zen.PrepareChat(hub, pin)
+	send, rename, err = zen.PrepareChat(hub, pin)
+	if s := zenSessionOf(r); s != nil {
+		s.rename = rename
+	}
 	return send, "chat/completions", translate.Zen, err
 }
 

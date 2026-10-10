@@ -128,8 +128,16 @@ func TestSeedKeylessConnectionsKeepsAnExistingAccount(t *testing.T) {
 	if err := s.SeedKeylessConnections(); err != nil {
 		t.Fatal(err)
 	}
+	// Other keyless providers seed their own account too, so count the one this
+	// test is about.
 	list, _ := s.ListConnections()
-	if len(list) != 1 {
-		t.Fatalf("connections = %d, want the existing one only", len(list))
+	n := 0
+	for _, c := range list {
+		if c.Provider == "opencode" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("opencode connections = %d, want the existing one only", n)
 	}
 }
