@@ -22,6 +22,7 @@ type Catalogue struct {
 	PricedFree map[string]bool
 	Limits     map[string]Limit
 	Responses  map[string]bool
+	Efforts    map[string][]string
 }
 
 const responsesNPM = "@ai-sdk/openai"
@@ -33,8 +34,12 @@ func ParseCatalogue(raw []byte) (Catalogue, bool) {
 	var doc struct {
 		OpenCode struct {
 			Models map[string]struct {
-				Reasoning *bool `json:"reasoning"`
-				Cost      *struct {
+				Reasoning        *bool `json:"reasoning"`
+				ReasoningOptions []struct {
+					Type   string   `json:"type"`
+					Values []string `json:"values"`
+				} `json:"reasoning_options"`
+				Cost *struct {
 					Input  *float64 `json:"input"`
 					Output *float64 `json:"output"`
 				} `json:"cost"`
@@ -49,7 +54,7 @@ func ParseCatalogue(raw []byte) (Catalogue, bool) {
 			} `json:"models"`
 		} `json:"opencode"`
 	}
-	c := Catalogue{Reasoning: map[string]bool{}, PricedFree: map[string]bool{}, Limits: map[string]Limit{}, Responses: map[string]bool{}}
+	c := Catalogue{Reasoning: map[string]bool{}, PricedFree: map[string]bool{}, Limits: map[string]Limit{}, Responses: map[string]bool{}, Efforts: map[string][]string{}}
 	if json.Unmarshal(raw, &doc) != nil {
 		return c, false
 	}
@@ -65,6 +70,12 @@ func ParseCatalogue(raw []byte) (Catalogue, bool) {
 		}
 		if m.Provider.NPM == responsesNPM {
 			c.Responses[id] = true
+		}
+		for _, opt := range m.ReasoningOptions {
+			if opt.Type == "effort" && len(opt.Values) > 0 {
+				c.Efforts[id] = opt.Values
+				break
+			}
 		}
 	}
 	return c, len(c.Reasoning) > 0
@@ -93,11 +104,14 @@ func List(upstream []string, c *Catalogue) (ids []string, doc []byte) {
 		ids = append(ids, id)
 		item := map[string]any{"id": id, "object": "model", "owned_by": "opencode"}
 		if r, ok := c.Reasoning[id]; ok {
+			params := []string{}
 			if r {
-				item["supported_parameters"] = []string{"reasoning", "include_reasoning"}
-			} else {
-				item["supported_parameters"] = []string{}
+				params = []string{"reasoning", "include_reasoning"}
 			}
+			if len(c.Efforts[id]) > 0 {
+				params = append(params, "reasoning_effort")
+			}
+			item["supported_parameters"] = params
 		}
 		if l := c.Limits[id]; l.Context > 0 || l.Output > 0 {
 			if l.Context > 0 {

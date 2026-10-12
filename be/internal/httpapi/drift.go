@@ -400,8 +400,10 @@ func (a *api) askResolver(ctx context.Context, model, prompt string, in any) (re
 	}
 	var d struct {
 		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
+			FinishReason string `json:"finish_reason"`
+			Message      struct {
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"`
 			} `json:"message"`
 		} `json:"choices"`
 	}
@@ -413,7 +415,8 @@ func (a *api) askResolver(ctx context.Context, model, prompt string, in any) (re
 	var out resolverAnswer
 	i, j := strings.Index(text, "{"), strings.LastIndex(text, "}")
 	if i < 0 || j <= i || json.Unmarshal([]byte(text[i:j+1]), &out) != nil || out.Cause == "" {
-		return resolverAnswer{}, fmt.Errorf("%s answered no verdict: %.120s", model, text)
+		return resolverAnswer{}, fmt.Errorf("%s answered no verdict (finish_reason %q, %d bytes of reasoning): %.120s",
+			model, d.Choices[0].FinishReason, len(d.Choices[0].Message.ReasoningContent), text)
 	}
 	return out, nil
 }

@@ -42,6 +42,10 @@ type AccountQuota struct {
 	ResetsError  string        `json:"resetsError,omitempty"`
 	Error        string        `json:"error,omitempty"`
 	FetchedAt    string        `json:"fetchedAt"`
+	// doneAt is when the read finished, which is what a 429 must be compared
+	// against: a quota read that started before the 429 and landed after it says
+	// nothing about whether the account is spent. FetchedAt is when it started.
+	doneAt time.Time
 
 	// Block-present flags for Claude fresh read validation in claimReset.
 	HasJuniperTide bool `json:"-"`
@@ -231,6 +235,7 @@ func (a *api) fetchQuota(ctx context.Context, c store.Connection) AccountQuota {
 	if res.Resets == nil {
 		res.Resets = []QuotaReset{}
 	}
+	res.doneAt = time.Now()
 	return res
 }
 
@@ -264,6 +269,7 @@ func (a *api) freshQuota(ctx context.Context, c store.Connection) (AccountQuota,
 	if got.Resets == nil {
 		got.Resets = []QuotaReset{}
 	}
+	got.doneAt = time.Now()
 	a.quota.mu.Lock()
 	if a.quota.m == nil {
 		a.quota.m = map[string]AccountQuota{}

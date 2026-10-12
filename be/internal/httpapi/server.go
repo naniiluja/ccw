@@ -24,6 +24,7 @@ import (
 	"github.com/naniiluja/ccw/internal/drift"
 	"github.com/naniiluja/ccw/internal/store"
 	"github.com/naniiluja/ccw/internal/translate"
+	"github.com/naniiluja/ccw/internal/websearch"
 	"github.com/naniiluja/ccw/internal/webui"
 )
 
@@ -55,6 +56,11 @@ type api struct {
 	rate rateHeaders
 	// quota caches the quota read from each account.
 	quota quotaCache
+	// parks holds the accounts a provider has answered 429 for, per model, until
+	// the moment it named. A parked account is skipped instead of tried.
+	parks park
+	// quotaRecheck lets a 429 force one quota read per account per interval.
+	quotaRecheck recheckGate
 	// auto tracks the providers whose models are being auto-tested.
 	auto autoState
 	// review is the drift review.
@@ -112,6 +118,23 @@ func NewWithAuth(s *store.Store, baseOverride map[string]string, authCfg *auth.C
 	return h
 }
 
+// NewAPI builds the api and returns the handler that serves it, for a caller
+// that needs the api itself: the Dia bridge asks it for the search service so
+// both faces of ccw answer a search with the same one.
+func NewAPI(s *store.Store, baseOverride map[string]string, authCfg *auth.Config) (*API, http.Handler) {
+	a, h := newServer(s, baseOverride, authCfg)
+	return &API{a: a}, h
+}
+
+// API is the handle another face of ccw needs. It is a named wrapper rather
+// than the api type itself so nothing outside the package can reach the fields.
+type API struct{ a *api }
+
+// Searcher returns the search service ccw runs for a client whose model cannot
+// search on its own. It is the same service /v1 uses, so a caller asking for a
+// search through either face reaches the same provider.
+func (p *API) Searcher() websearch.Searcher { return lazySearch{a: p.a} }
+
 // newServer builds the api and its routes; tests reach the api through it.
 func newServer(s *store.Store, baseOverride map[string]string, authCfg *auth.Config) (*api, http.Handler) {
 	return newServerWithLog(s, baseOverride, authCfg, slog.Default())
@@ -137,6 +160,8 @@ func newServerWithLog(s *store.Store, baseOverride map[string]string, authCfg *a
 		login:        auth.NewLoginGuard(),
 		claims:       newClaimTables(),
 		zen:          newZenState(),
+		parks:        newPark(),
+		quotaRecheck: recheckGate{},
 	}
 	go a.autoTestLoop()
 	a.loadDefs()

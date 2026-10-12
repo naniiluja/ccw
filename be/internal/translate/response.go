@@ -19,6 +19,10 @@ func newID(prefix string) string {
 
 func num(v any) int64 {
 	switch n := v.(type) {
+	case int64:
+		return n
+	case int:
+		return int64(n)
 	case json.Number:
 		i, _ := n.Int64()
 		return i
@@ -188,19 +192,49 @@ type Reply struct {
 	// Search is the search ccw ran for the caller, when it asked for one. Its
 	// blocks open the answer.
 	Search *WebSearch
+	// Tools maps a sanitized tool name back to the one the caller declared,
+	// so a tool_use answer carries the name the client can dispatch on.
+	Tools map[string]string
 }
 
 // ReplyFor reads a Messages request for what its answer must carry. model is
 // the id the caller sent, before ccw removed its provider prefix.
 func ReplyFor(body []byte, model string) Reply {
 	r := Reply{Model: model, InputTokens: EstimateTokens(body)}
-	if in, err := decode(body); err == nil {
-		switch str(asObj(in["thinking"])["type"]) {
-		case "enabled", "adaptive":
-			r.Thinking = true
+	in, err := decode(body)
+	if err != nil {
+		return r
+	}
+	switch str(asObj(in["thinking"])["type"]) {
+	case "enabled", "adaptive":
+		r.Thinking = true
+	}
+	// A Messages caller already names its tools the way Anthropic wants; an
+	// OpenAI caller's names are sanitized on the way out, so the clean name is
+	// recorded here to put the original one back on the answer.
+	for _, t := range list(in["tools"]) {
+		td := asObj(t)
+		name := str(td["name"])
+		if name == "" {
+			name = str(asObj(td["function"])["name"])
+		}
+		if clean := AnthropicToolName(name); clean != name {
+			if r.Tools == nil {
+				r.Tools = map[string]string{}
+			}
+			r.Tools[clean] = name
 		}
 	}
 	return r
+}
+
+// toolName puts the tool's declared name back when ccw had to sanitize it for
+// the upstream, so the answer names the tool the caller can dispatch on.
+func (r Reply) toolName(sent string) string {
+	if original, ok := r.Tools[sent]; ok {
+		return original
+	}
+	return sent
 }
 
 // imageTokens is what one image or document adds to an estimate.
@@ -327,7 +361,7 @@ func OpenAIResponseToAnthropic(body []byte, r Reply) ([]byte, error) {
 		for _, tc := range calls {
 			t := asObj(tc)
 			fn := asObj(t["function"])
-			content = append(content, obj{"type": "tool_use", "id": toolID(str(t["id"])), "name": fn["name"],
+			content = append(content, obj{"type": "tool_use", "id": toolID(str(t["id"])), "name": r.toolName(str(fn["name"])),
 				"input": parseArgs(str(fn["arguments"]))})
 		}
 		if s := openaiStop[str(ch["finish_reason"])]; s != "" {
@@ -409,7 +443,7 @@ func sseEvents(r io.Reader, each func(event, data string) bool) error {
 
 // AnthropicStreamToOpenAI reads a Messages event stream and writes the
 // equivalent Chat Completions chunks.
-func AnthropicStreamToOpenAI(dst Flusher, src io.Reader) {
+func AnthropicStreamToOpenAI(dst Flusher, src io.Reader, r Reply) {
 	id, model := newID("chatcmpl-"), ""
 	created := time.Now().Unix()
 	toolIndex := map[int64]int{} // content block index -> tool call index
@@ -442,7 +476,7 @@ func AnthropicStreamToOpenAI(dst Flusher, src io.Reader) {
 				i := len(toolIndex)
 				toolIndex[num(ev["index"])] = i
 				emit(obj{"tool_calls": []any{obj{"index": i, "id": blk["id"], "type": "function",
-					"function": obj{"name": blk["name"], "arguments": ""}}}}, nil, nil)
+					"function": obj{"name": r.toolName(str(blk["name"])), "arguments": ""}}}}, nil, nil)
 			}
 		case "content_block_delta":
 			d := asObj(ev["delta"])
@@ -657,7 +691,7 @@ func (w *anthropicStream) finish() {
 	w.closeBlock()
 	for _, ti := range w.toolOrder {
 		ta := w.tools[ti]
-		w.open("tool", obj{"type": "tool_use", "id": toolID(ta.id), "name": ta.name, "input": obj{}})
+		w.open("tool", obj{"type": "tool_use", "id": toolID(ta.id), "name": w.r.toolName(ta.name), "input": obj{}})
 		// The whole-body path reads arguments with parseArgs; a stream that
 		// sent broken JSON gets the same object, not a parse error later.
 		args, _ := json.Marshal(parseArgs(ta.args))

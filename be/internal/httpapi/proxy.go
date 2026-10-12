@@ -379,6 +379,12 @@ var copilotClaude = regexp.MustCompile(`(?i)claude`)
 
 // shapeFor names the shape and endpoint path a provider takes for one model.
 func shapeFor(p provider.Provider, model string) (shape, path string) {
+	// Dia speaks Messages, but not to a network provider: the bridge rebuilds
+	// the Vertex-shaped path its handler expects, so ccw only has to name the
+	// bridge's own endpoint.
+	if p.ID == "dia" {
+		return translate.Anthropic, "v1/messages"
+	}
 	if p.Exchange == "copilot" {
 		if copilotClaude.MatchString(model) {
 			return translate.Anthropic, "v1/messages"
@@ -497,7 +503,7 @@ func (a *api) relayVia(w http.ResponseWriter, resp *http.Response, connID, to, v
 	pr, pw := io.Pipe()
 	go func() {
 		defer pw.Close()
-		a.toChatChunks(pipeFlusher{pw}, io.TeeReader(resp.Body, tapWriter{raw}), via)
+		a.toChatChunks(pipeFlusher{pw}, io.TeeReader(resp.Body, tapWriter{raw}), via, reply)
 	}()
 	tap := &respTap{headLimit: usageTapHeadLimit, tailLimit: usageTapTailLimit}
 	chunks := io.TeeReader(pr, tapWriter{tap})
@@ -514,7 +520,7 @@ func (a *api) relayVia(w http.ResponseWriter, resp *http.Response, connID, to, v
 		w.WriteHeader(resp.StatusCode)
 		translate.OpenAIStreamToAnthropic(out, chunks, reply)
 	default:
-		whole := collectChunks(via, chunks)
+		whole := collectChunks(via, chunks, reply.Tools)
 		status := resp.StatusCode
 		// A provider can stream an error event inside an HTTP 200. The collected
 		// body is then an error, not an answer, so the caller must not see 200.
@@ -554,18 +560,18 @@ func isErrorBody(b []byte) bool {
 }
 
 // toChatChunks converts a provider's event stream to Chat Completions chunks.
-func (a *api) toChatChunks(dst translate.Flusher, src io.Reader, via string) {
+func (a *api) toChatChunks(dst translate.Flusher, src io.Reader, via string, reply translate.Reply) {
 	switch via {
 	case translate.Antigravity:
 		translate.GeminiStreamToOpenAI(dst, src, &a.sigs)
 	case translate.Anthropic:
-		translate.AnthropicStreamToOpenAI(dst, src)
+		translate.AnthropicStreamToOpenAI(dst, src, reply)
 	case translate.Responses:
 		translate.ResponsesStreamToOpenAI(dst, src)
 	case translate.Zen:
-		translate.ZenStreamToOpenAI(dst, src)
+		translate.ZenStreamToOpenAI(dst, src, reply.Tools)
 	case translate.ZenResponses:
-		translate.ZenResponsesStreamToOpenAI(dst, src)
+		translate.ZenResponsesStreamToOpenAI(dst, src, reply.Tools)
 	default:
 		io.Copy(dst, src)
 	}
@@ -629,10 +635,21 @@ func (f flushWriter) Write(p []byte) (int, error) { return f.w.Write(p) }
 // Flush ignores a writer that cannot flush; the bytes still arrive at the end.
 func (f flushWriter) Flush() error { f.rc.Flush(); return nil }
 
-// anyAnthropic reports whether one of the accounts speaks the Anthropic shape.
+// anyAnthropic reports whether one of the accounts speaks the Anthropic shape
+// over a real Anthropic endpoint.
+//
+// dia speaks the shape but is reached through internal/diabridge, which is a
+// local bridge to Dia's own agent rather than Anthropic's API. It has no hosted
+// web search or server tools behind it, so it must not count here: counting it
+// leaves every Claude Code client asking this setup for a server-side search
+// tool that nothing will answer.
 func (a *api) anyAnthropic(targets []store.Connection) bool {
 	for _, c := range targets {
-		if p, ok := a.providerFor(c); ok && shapeOf(p) == translate.Anthropic {
+		p, ok := a.providerFor(c)
+		if !ok || p.ID == "dia" {
+			continue
+		}
+		if shapeOf(p) == translate.Anthropic {
 			return true
 		}
 	}
@@ -649,9 +666,9 @@ func countTokensEstimate(w http.ResponseWriter, body []byte) {
 // collectChunks folds chat chunks into one answer. The free tier's own answer
 // carries more than the plain fold keeps (reasoning under every name, kept
 // fields), so it has its own.
-func collectChunks(via string, chunks io.Reader) []byte {
+func collectChunks(via string, chunks io.Reader, rename ...map[string]string) []byte {
 	if via == translate.Zen || via == translate.ZenResponses {
-		return translate.CollectZenStream(chunks)
+		return translate.CollectZenStream(chunks, rename...)
 	}
 	return translate.CollectOpenAIStream(chunks)
 }
@@ -671,7 +688,33 @@ func (a *api) sendWithRecovery(fc *failoverCall, acc accountTry, call *upstreamC
 	if resp, err = a.retryResponsesOnly(fc, acc, call, resp); err != nil {
 		return nil, err
 	}
-	return a.retryUnauthorized(fc, acc, call, resp)
+	if resp, err = a.retryUnauthorized(fc, acc, call, resp); err != nil {
+		return nil, err
+	}
+	a.noteRefusal(fc, acc, resp)
+	return a.retryZenRateLimit(fc, acc, call, resp)
+}
+
+// noteRefusal records what a refusal taught the next request, once every retry that
+// one account can do has run out: a 429 parks the account until the moment the
+// provider named, and a 401 clears that park, because a refused credential is not a
+// spent quota and a refreshed one must be tried again.
+func (a *api) noteRefusal(fc *failoverCall, acc accountTry, resp *http.Response) {
+	if resp.StatusCode == http.StatusUnauthorized {
+		// A refused credential is not a spent quota, so every park this account
+		// holds must go: a 401 says the account itself cannot answer, which is a
+		// reason to try it again rather than to keep it out of rotation.
+		a.parks.forgetAll(acc.conn.ID)
+		return
+	}
+	if resp.StatusCode != http.StatusTooManyRequests {
+		return
+	}
+	model := acc.model
+	if model == "" {
+		model, _ = bodyModel(fc.body)
+	}
+	a.parkAccount(acc.conn, model, resp)
 }
 
 // retryResponsesOnly handles Copilot answering some models only on /responses,
@@ -730,6 +773,33 @@ func (a *api) retryUnauthorized(fc *failoverCall, acc accountTry, call *upstream
 		}
 	}
 	return resp, nil
+}
+
+var zenRetryBackoff = 1500 * time.Millisecond
+
+// retryZenRateLimit releases a burned session and tries once more on a 429 when
+// there is no other account to fail over to.
+func (a *api) retryZenRateLimit(fc *failoverCall, acc accountTry, call *upstreamCall, resp *http.Response) (*http.Response, error) {
+	if acc.p.API != translate.Zen || resp.StatusCode != http.StatusTooManyRequests {
+		return resp, nil
+	}
+	a.releaseZenSession(fc.r)
+	if fc.targetCount > 1 {
+		return resp, nil
+	}
+	resp.Body.Close()
+	select {
+	case <-time.After(zenRetryBackoff):
+	case <-fc.r.Context().Done():
+		return nil, fc.r.Context().Err()
+	}
+	next, err := a.buildUpstreamCall(fc, acc)
+	if err != nil {
+		return nil, err
+	}
+	*call = next
+	call.send = filterFor(a, acc.p, acc.conn.Provider, call.send)
+	return a.sendLogged(fc.r, acc.p, acc.conn, call.path, acc.secret, call.send, acc.model)
 }
 
 // relayAnswer writes an account's answer to the caller, in the caller's shape

@@ -116,7 +116,9 @@ func HealAnthropic(body []byte) ([]byte, bool) {
 	if !ok {
 		return body, false
 	}
+	raw, folded := foldSystemTurns(in, raw)
 	msgs, changed := healTurns(raw)
+	changed = changed || folded
 	out, paired := pairToolResults(msgs)
 	changed = changed || paired
 	if dropStaleThinking(in, out) {
@@ -136,6 +138,48 @@ func HealAnthropic(body []byte) ([]byte, bool) {
 		return body, false
 	}
 	return b, true
+}
+
+// foldSystemTurns moves the system and developer turns of a conversation into
+// the top-level system prompt, in order, and returns the turns that remain.
+//
+// Claude Code sends its output style and similar instructions as a turn with
+// role "system". The Messages shape has no such role, so healTurns would drop
+// it and the model would answer without the instructions; folding keeps them,
+// as the chat and Gemini translations already do for their own system turns.
+func foldSystemTurns(in obj, raw []any) ([]any, bool) {
+	var extra []any
+	kept := make([]any, 0, len(raw))
+	for _, r := range raw {
+		m := asObj(r)
+		if role := str(m["role"]); role != "system" && role != "developer" {
+			kept = append(kept, r)
+			continue
+		}
+		for _, b := range anthropicBlocks(m["content"]) {
+			if blk := asObj(b); str(blk["type"]) == "text" && str(blk["text"]) != "" {
+				extra = append(extra, blk)
+			}
+		}
+	}
+	if len(kept) == len(raw) {
+		return raw, false
+	}
+	switch s := in["system"].(type) {
+	case string:
+		if s != "" {
+			extra = append([]any{obj{"type": "text", "text": s}}, extra...)
+		}
+		in["system"] = extra
+	case []any:
+		in["system"] = append(s, extra...)
+	default:
+		in["system"] = extra
+	}
+	if len(extra) == 0 {
+		delete(in, "system")
+	}
+	return kept, true
 }
 
 // healTurns drops turns that are neither user nor assistant and thinking

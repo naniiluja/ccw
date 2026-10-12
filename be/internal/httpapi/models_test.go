@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/naniiluja/ccw/internal/store"
+	"github.com/naniiluja/ccw/internal/zen"
 )
 
 func TestModelsForAccountReturnsProviderList(t *testing.T) {
@@ -333,5 +334,49 @@ func TestAutoTestRateLimitedGoesOffAndManualTestSetsSwitch(t *testing.T) {
 	post(h, "/providers/groq/models/test", `{"model":"good"}`)
 	if tableOf(t, h, "groq")["good"].Active {
 		t.Error("a failed manual test left the model on")
+	}
+}
+
+func TestAutoTestZenRateLimitIsInconclusive(t *testing.T) {
+	old := autoTestRetry
+	autoTestRetry = time.Millisecond
+	defer func() { autoTestRetry = old }()
+	oldZen := zenRetryBackoff
+	zenRetryBackoff = time.Millisecond
+	defer func() { zenRetryBackoff = oldZen }()
+	var list atomic.Value
+	list.Store(`{"data":[{"id":"busy-free"}]}`)
+	works := map[string]bool{} // not in works => fails with 429
+	up := fakeModels(&list, works, nil)
+	defer up.Close()
+	s, _ := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	defer s.Close()
+	s.CreateConnection("opencode", "zen", "public")
+	cat := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"opencode":{"models":{"busy-free":{"reasoning":true,"cost":{"input":0,"output":0}}}}}`))
+	}))
+	defer cat.Close()
+	a, h := newServer(s, map[string]string{"opencode": up.URL}, nil)
+	a.zen.cat = &zen.Source{URL: cat.URL, TTL: 1 << 40}
+	tableOf(t, h, "opencode")
+	s.SetModelsActive("opencode", []string{"busy-free"}, true)
+	post(h, "/providers/opencode/model-policy", `{"autoTest":true}`)
+	waitIdle(t, h, "opencode")
+	m := tableOf(t, h, "opencode")
+	if !m["busy-free"].Active {
+		t.Errorf("opencode rate-limited model was deactivated, want inconclusive/active: %+v", m["busy-free"])
+	}
+}
+
+func TestRetirementNoticeIsNotAPassingTest(t *testing.T) {
+	for text, want := range map[string]bool{
+		"Claude Sonnet 4.6 is no longer available. Please switch to Claude Opus 4.6": true,
+		"Gemini 3.5 Flash is No Longer Available.":                                   true,
+		"OK": false,
+		"":   false,
+	} {
+		if got := isRetirementNotice(text); got != want {
+			t.Errorf("isRetirementNotice(%q) = %v, want %v", text, got, want)
+		}
 	}
 }

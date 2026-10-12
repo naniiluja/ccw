@@ -19,23 +19,20 @@ import (
 // Codex uses, which refuses fields this upstream takes (temperature,
 // max_output_tokens) and takes ones this upstream has not been shown
 // (include, reasoning.summary); the free tier gets its own.
-func PrepareResponses(chat []byte, sessionID string, pin map[string]any) ([]byte, error) {
+func PrepareResponses(chat []byte, sessionID string, pin map[string]any) ([]byte, map[string]string, error) {
 	m, err := decodeObject(chat)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	stripCaller(m)
 	for k, v := range pin {
 		m[k] = v
 	}
+	rename := prepareTools(m)
 	tools, _ := m["tools"].([]any)
-	for i, t := range tools {
-		tools[i] = nestTool(t)
-	}
-	tools = withRequired(tools, func(name string) any { return chatTool(name) })
 
 	out := map[string]any{}
-	for _, k := range []string{"model", "temperature", "top_p", "parallel_tool_calls"} {
+	for _, k := range []string{"model", "temperature", "top_p", "parallel_tool_calls", "user", "safety_identifier"} {
 		if v, ok := m[k]; ok {
 			out[k] = v
 		}
@@ -77,7 +74,8 @@ func PrepareResponses(chat []byte, sessionID string, pin map[string]any) ([]byte
 	out["stream"] = true
 	out["store"] = false
 	out["prompt_cache_key"] = sessionID
-	return json.Marshal(out)
+	b, err := json.Marshal(out)
+	return b, rename, err
 }
 
 func list(v any) []any { l, _ := v.([]any); return l }
@@ -116,11 +114,25 @@ func contentParts(v any, textType string) []any {
 			parts = append(parts, map[string]any{"type": textType, "text": s})
 		} else if pm["type"] == "image_url" {
 			url := pm["image_url"]
+			detail := ""
 			if um, ok := url.(map[string]any); ok {
+				detail, _ = um["detail"].(string)
 				url = um["url"]
 			}
 			if u, ok := url.(string); ok {
-				parts = append(parts, map[string]any{"type": "input_image", "image_url": u})
+				p := map[string]any{"type": "input_image", "image_url": u}
+				if detail != "" {
+					p["detail"] = detail
+				}
+				parts = append(parts, p)
+			}
+		} else if pm["type"] == "file" {
+			if f, ok := pm["file"].(map[string]any); ok {
+				p := map[string]any{"type": "input_file"}
+				for k, v := range f {
+					p[k] = v
+				}
+				parts = append(parts, p)
 			}
 		}
 	}
@@ -167,7 +179,6 @@ func responsesInput(messages []any) (string, []any) {
 	return strings.Join(system, "\n\n"), items
 }
 
-// flatTool lifts a nested {"function": {...}} tool to the flat Responses form.
 func flatTool(t any) any {
 	m, ok := t.(map[string]any)
 	fn, isFn := m["function"].(map[string]any)

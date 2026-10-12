@@ -178,6 +178,14 @@ func respParts(c any, textType string) []any {
 					}
 					out = append(out, obj{"type": "input_image", "image_url": u, "detail": detail})
 				}
+			case "file":
+				if f := asObj(part["file"]); f != nil {
+					p := obj{"type": "input_file"}
+					for k, val := range f {
+						p[k] = val
+					}
+					out = append(out, p)
+				}
 			}
 		}
 		return out
@@ -257,6 +265,9 @@ func ResponsesStreamToOpenAI(dst Flusher, src io.Reader) {
 		case "response.output_text.delta":
 			start()
 			emit(obj{"content": ev["delta"]}, nil, nil)
+		case "response.refusal.delta":
+			start()
+			emit(obj{"refusal": ev["delta"]}, nil, nil)
 		case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
 			start()
 			emit(obj{"reasoning_content": ev["delta"]}, nil, nil)

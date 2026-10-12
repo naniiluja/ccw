@@ -190,10 +190,20 @@ func (a *api) runChatTest(ctx context.Context, prov, model string) modelTest {
 	default:
 		res.Message = strings.TrimSpace(string(raw))
 	}
+	// Antigravity answers a retired model with HTTP 200 and the notice as the
+	// reply, so a passing status alone does not prove the model works.
+	if res.OK && isRetirementNotice(res.Message) {
+		res.OK = false
+	}
 	if len(res.Message) > 300 {
 		res.Message = res.Message[:300]
 	}
 	return res
+}
+
+// isRetirementNotice reports whether a model's reply says the model is gone.
+func isRetirementNotice(text string) bool {
+	return strings.Contains(strings.ToLower(text), "no longer available")
 }
 
 // modelRows is the model table for MCP and the API.
@@ -499,7 +509,9 @@ func (a *api) autoTestHeld(prov string, models []string, retest bool) {
 					mu.Unlock()
 				}
 				a.store.RecordModelTest(prov, m, res.OK, res.Ms, res.Message, res.Account)
-				a.store.SetModelsActive(prov, []string{m}, res.OK)
+				if !(prov == "opencode" && res.Status == http.StatusTooManyRequests) {
+					a.store.SetModelsActive(prov, []string{m}, res.OK)
+				}
 				if res.OK {
 					mu.Lock()
 					works++

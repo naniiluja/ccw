@@ -27,6 +27,45 @@ func TestAHealthyAnthropicHistoryIsLeftAlone(t *testing.T) {
 	}
 }
 
+func TestSystemTurnsReachTheSystemPrompt(t *testing.T) {
+	// Claude Code puts the output style in a system turn; the Messages shape has
+	// no such role, so dropping it lost the style on every Anthropic provider.
+	out, changed := heal(t, `{"model":"m","system":[{"type":"text","text":"base"}],"messages":[
+	 {"role":"user","content":"context"},
+	 {"role":"system","content":"style one"},
+	 {"role":"developer","content":[{"type":"text","text":"style two"}]},
+	 {"role":"user","content":"hi"}]}`)
+	if !changed {
+		t.Fatal("a history with system turns was left alone")
+	}
+	var texts []string
+	for _, s := range out["system"].([]any) {
+		texts = append(texts, s.(map[string]any)["text"].(string))
+	}
+	if strings.Join(texts, "|") != "base|style one|style two" {
+		t.Errorf("system = %v, want base then both turns in order", texts)
+	}
+	if msgs := out["messages"].([]any); len(msgs) != 1 || msgs[0].(map[string]any)["role"] != "user" {
+		t.Errorf("messages = %v, want the two user turns merged into one", msgs)
+	}
+}
+
+func TestAStringSystemPromptLeadsTheFoldedTurns(t *testing.T) {
+	out, _ := heal(t, `{"model":"m","system":"base","messages":[
+	 {"role":"system","content":"style"},{"role":"user","content":"hi"}]}`)
+	system, _ := out["system"].([]any)
+	if len(system) != 2 || system[0].(map[string]any)["text"] != "base" || system[1].(map[string]any)["text"] != "style" {
+		t.Errorf("system = %v, want base then style", system)
+	}
+}
+
+func TestAnEmptySystemTurnLeavesNoEmptyPrompt(t *testing.T) {
+	out, _ := heal(t, `{"model":"m","messages":[{"role":"system","content":""},{"role":"user","content":"hi"}]}`)
+	if _, ok := out["system"]; ok {
+		t.Errorf("an empty system turn produced a system prompt: %v", out["system"])
+	}
+}
+
 func TestAThinkingBlockWithNoSignatureIsDropped(t *testing.T) {
 	m, changed := heal(t, `{"model":"m","max_tokens":9,"messages":[
 	 {"role":"user","content":"go"},

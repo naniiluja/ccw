@@ -212,9 +212,11 @@ type zenUpstream struct {
 	*httptest.Server
 	mu    sync.Mutex
 	calls []zenCall
-	// status, when set, answers every call with it and the body instead.
-	status int
-	body   string
+	// status, when set, answers every call with it and the body instead, and
+	// retryAfter adds the header OpenCode Zen sends with a free-tier refusal.
+	status     int
+	body       string
+	retryAfter string
 }
 
 type zenCall struct {
@@ -253,13 +255,16 @@ func newZenUpstream(t *testing.T) *zenUpstream {
 		json.Unmarshal(raw, &body)
 		u.mu.Lock()
 		u.calls = append(u.calls, zenCall{path: r.URL.Path, header: r.Header.Clone(), body: body, raw: string(raw)})
-		status, canned := u.status, u.body
+		status, canned, retryAfter := u.status, u.body, u.retryAfter
 		u.mu.Unlock()
 		if r.URL.Path == "/models" {
 			io.WriteString(w, `{"object":"list","data":[{"id":"big-pickle"},{"id":"paid-model"},{"id":"muse-spark-1.3-contributor-free"},{"id":"jev-1.13-free"}]}`)
 			return
 		}
 		if status != 0 {
+			if retryAfter != "" {
+				w.Header().Set("Retry-After", retryAfter)
+			}
 			w.WriteHeader(status)
 			io.WriteString(w, canned)
 			return
@@ -367,6 +372,36 @@ func TestZenCallCarriesWhatTheGateReads(t *testing.T) {
 	}
 	if c.body["stream"] != true || strings.Join(toolNamesOf(c.body), ",") != "read,shell" || c.body["model"] != "big-pickle" {
 		t.Errorf("body = %s", c.raw)
+	}
+}
+
+func TestZenRejectsConflictingToolChoiceNone(t *testing.T) {
+	h, _, _ := zenRig(t)
+	rec := zenPost(h, "/v1/chat/completions", `{"model":"opencode/muse-spark-1.3-contributor-free","tool_choice":"none","messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for tool_choice none on muse: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestZenRetries429WithFreshSession(t *testing.T) {
+	oldZen := zenRetryBackoff
+	zenRetryBackoff = time.Millisecond
+	defer func() { zenRetryBackoff = oldZen }()
+	h, up, _ := zenRig(t)
+	first := true
+	up.Server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if first {
+			first = false
+			w.WriteHeader(http.StatusTooManyRequests)
+			w.Write([]byte(`{"error":"Too Many Requests"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, zenChatStream)
+	})
+	rec := zenPost(h, "/v1/chat/completions", `{"model":"opencode/big-pickle","messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 after retry on 429: %s", rec.Code, rec.Body.String())
 	}
 }
 

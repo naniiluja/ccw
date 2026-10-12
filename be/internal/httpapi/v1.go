@@ -482,7 +482,7 @@ func (a *api) fetchCatalogEntry(ctx context.Context, prov string) catalogEntry {
 	var raw []byte
 	if conns := a.activeConnections(prov); len(conns) > 0 {
 		if p, _ := a.providerFor(conns[0]); p.API == translate.Antigravity {
-			if ids, raw, ok = a.antigravityModels(ctx, conns[0]); ok {
+			if ids, raw, ok = a.antigravityCatalog(ctx, conns); ok {
 				ids, groups = groupVariants(ids)
 			}
 		} else if p.NoModelList {
@@ -653,78 +653,17 @@ func bodyModel(body []byte) (string, bool) {
 	return s, true
 }
 
-// failover tries the accounts in order from start, wrapping around, and relays
-// the first answer that is not a busy status. The last account's answer is
-// relayed whatever it is, so the caller sees the real upstream error. An OAuth
-// account that answers 401 is refreshed and retried once, which recovers a token
-// the provider revoked before its recorded expiry.
-func (a *api) failover(w http.ResponseWriter, r *http.Request, body []byte, targets []store.Connection, start int) {
-	fc, served := a.newFailoverCall(w, r, body, targets, start)
-	if served {
-		return
-	}
-	tried := 0
-	attempts := a.attemptsFor(fc.r.Context(), targets, start, fc.body)
-	for i, at := range attempts {
-		acc, ok := a.resolveAttempt(fc, at)
-		if !ok {
-			continue
-		}
-		call, err := a.buildUpstreamCall(fc, acc)
-		if err != nil {
-			var skip errSkipAccount
-			if errors.As(err, &skip) {
-				a.logFor(fc.r.Context()).Warn("proxy.account.skip", "connection", acc.conn.ID, "err", skip.err)
-				continue
-			}
-			writeError(w, http.StatusBadRequest, "cannot translate the request: "+err.Error())
-			return
-		}
-		// A same-shape Chat Completions stream is asked for its usage so ccw
-		// can count it; the editor in relayAnswer takes it out again.
-		injected := false
-		if call.to == "" && fc.client == translate.OpenAI {
-			if want, _ := shapeFor(acc.p, acc.model); want == translate.OpenAI {
-				call.send, injected = withUsage(call.send)
-			}
-		}
-		call.send = filterFor(a, acc.p, acc.conn.Provider, call.send)
-		tried++
-		resp, err := a.sendWithRecovery(fc, acc, &call)
-		if err != nil {
-			continue
-		}
-		// Fail over on a busy status only while another account remains.
-		if retryableStatus(resp.StatusCode) {
-			a.logFor(fc.r.Context()).Warn("proxy.upstream.busy", "connection", acc.conn.ID,
-				"provider", acc.conn.Provider, "status", resp.StatusCode, "model", at.model)
-		}
-		if retryableStatus(resp.StatusCode) && i < len(attempts)-1 {
-			resp.Body.Close()
-			continue
-		}
-		a.relayAnswer(fc, acc, call, resp, injected)
-		return
-	}
-	if tried == 0 {
-		writeError(w, http.StatusInternalServerError, "no usable account")
-		return
-	}
-	writeError(w, http.StatusBadGateway, "all accounts failed")
-}
-
 // failoverCall is what stays the same across the accounts one request tries.
 type failoverCall struct {
 	w http.ResponseWriter
 	// r carries the Zen session, so every account of the request shares it.
-	r      *http.Request
-	body   []byte
-	client string
-	stream bool
-	reply  translate.Reply
-	// translated keeps the request in each provider shape already built, so
-	// accounts of one shape share one translation.
-	translated map[string][]byte
+	r           *http.Request
+	body        []byte
+	client      string
+	stream      bool
+	reply       translate.Reply
+	targetCount int
+	translated  map[string][]byte
 }
 
 // accountTry is one account ready to be called: its provider, the bearer to
@@ -750,7 +689,7 @@ type upstreamCall struct {
 // the client tools and the hosted search a non-Anthropic provider lacks. It
 // reports true when the server tools answered the request themselves.
 func (a *api) newFailoverCall(w http.ResponseWriter, r *http.Request, body []byte, targets []store.Connection, start int) (*failoverCall, bool) {
-	fc := &failoverCall{w: w, client: clientShape(r.PathValue("path")), stream: translate.Stream(body), translated: map[string][]byte{}}
+	fc := &failoverCall{w: w, client: clientShape(r.PathValue("path")), stream: translate.Stream(body), translated: map[string][]byte{}, targetCount: len(targets)}
 	if fc.client == translate.Anthropic {
 		callerModel, _ := r.Context().Value(callerModelKey{}).(string)
 		fc.reply = translate.ReplyFor(body, callerModel)
@@ -827,6 +766,14 @@ func (a *api) buildUpstreamCall(fc *failoverCall, acc accountTry) (upstreamCall,
 			var err error
 			c.send, c.path, c.via, err = a.zenRequest(r, body, client, model)
 			c.to = client
+			if rename := zenRenameOf(r); len(rename) > 0 {
+				if fc.reply.Tools == nil {
+					fc.reply.Tools = map[string]string{}
+				}
+				for k, v := range rename {
+					fc.reply.Tools[k] = v
+				}
+			}
 			return c, err
 		}
 	}

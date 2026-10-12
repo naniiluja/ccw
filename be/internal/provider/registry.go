@@ -267,6 +267,41 @@ var registry = map[string]Provider{
 			"Anthropic-Beta":    claudeBeta,
 		},
 	},
+	// Dia is reached through internal/diabridge, not over the network: the
+	// bridge speaks plain Messages JSON to the handler process Dia spawns for
+	// its own claude, and attaches that handler's per-turn credential. So the
+	// base is the bridge's back address, no credential goes out, and the
+	// caller's headers are dropped rather than handed to a local process.
+	"dia": {
+		ID:            "dia",
+		BaseURL:       "http://127.0.0.1:20140",
+		API:           "anthropic",
+		AuthHeader:    "",
+		AuthPrefix:    "",
+		Clean:         true,
+		DefaultSecret: "bridge",
+		Watch:         true,
+		Setup:         "none",
+		NoModelList:   true,
+		// The models Dia's gateway serves on every hop of a turn, each measured
+		// by switching to it after another model had already run. claude-sonnet-5-5
+		// is left out: the handler routes to Vertex on a model switch and Vertex
+		// rejects it with 400 "not whitelisted for use-case [dia-browser]", which
+		// also ends the turn and takes the bridge down.
+		Models: []string{
+			"claude-opus-5-5",
+			"claude-opus-5",
+			"claude-opus-4-8",
+			"claude-sonnet-5",
+			"claude-opus-4-6",
+		},
+		Identity: map[string]string{
+			"User-Agent": ClaudeInteractiveUserAgent,
+		},
+		Defaults: map[string]string{
+			"Anthropic-Version": "2023-06-01",
+		},
+	},
 }
 
 // The Copilot Chat versions ccw presents, from 9router's registry.

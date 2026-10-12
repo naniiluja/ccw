@@ -33,6 +33,8 @@ func TestCallerSessionIsReadFromTheHeadersOfEachClient(t *testing.T) {
 		{"a header wins over the body", header("X-Session-Id", "h"), map[string]any{"session_id": "b"}, "h", "header:x-session-id"},
 		{"nothing at all", nil, map[string]any{"model": "x"}, "", ""},
 		{"user_id that is not a record", nil, map[string]any{"metadata": map[string]any{"user_id": "plain"}}, "", ""},
+		{"codex turn metadata", header("X-Codex-Turn-Metadata", `{"session_id":"codex-99"}`), nil, "codex-99", "header:x-codex-turn-metadata"},
+		{"codex turn metadata camelCase", header("X-Codex-Turn-Metadata", `{"sessionId":"codex-88"}`), nil, "codex-88", "header:x-codex-turn-metadata"},
 	} {
 		if v, s := Caller(tc.h, tc.payload); v != tc.wantV || s != tc.wantS {
 			t.Errorf("%s: got (%q, %q), want (%q, %q)", tc.name, v, s, tc.wantV, tc.wantS)
@@ -142,7 +144,7 @@ func toolNames(m map[string]any) []string {
 }
 
 func TestPrepareChatAddsTheGateConditions(t *testing.T) {
-	out, err := PrepareChat([]byte(`{"model":"m","messages":[],"stream":false}`), nil)
+	out, _, err := PrepareChat([]byte(`{"model":"m","messages":[],"stream":false}`), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +155,7 @@ func TestPrepareChatAddsTheGateConditions(t *testing.T) {
 }
 
 func TestPrepareChatKeepsTheCallersToolsAndAppendsOnlyWhatIsMissing(t *testing.T) {
-	out, _ := PrepareChat([]byte(`{"model":"m","tools":[
+	out, _, _ := PrepareChat([]byte(`{"model":"m","tools":[
 	 {"type":"function","function":{"name":"read","parameters":{"type":"object"}}},
 	 {"type":"function","function":{"name":"get_weather"}}]}`), nil)
 	m := decode(t, out)
@@ -167,7 +169,7 @@ func TestPrepareChatKeepsTheCallersToolsAndAppendsOnlyWhatIsMissing(t *testing.T
 }
 
 func TestPrepareChatNestsAFlatTool(t *testing.T) {
-	out, _ := PrepareChat([]byte(`{"model":"m","tools":[{"name":"read","description":"d","parameters":{"type":"object"}}]}`), nil)
+	out, _, _ := PrepareChat([]byte(`{"model":"m","tools":[{"name":"read","description":"d","parameters":{"type":"object"}}]}`), nil)
 	m := decode(t, out)
 	first := m["tools"].([]any)[0].(map[string]any)
 	fn, _ := first["function"].(map[string]any)
@@ -180,14 +182,14 @@ func TestPrepareChatNestsAFlatTool(t *testing.T) {
 }
 
 func TestPrepareChatIgnoresANullToolsField(t *testing.T) {
-	out, err := PrepareChat([]byte(`{"model":"m","tools":null}`), nil)
+	out, _, err := PrepareChat([]byte(`{"model":"m","tools":null}`), nil)
 	if err != nil || !reflect.DeepEqual(toolNames(decode(t, out)), []string{"read", "shell"}) {
 		t.Errorf("err = %v, out = %s", err, out)
 	}
 }
 
 func TestPrepareChatDropsTheCallersIdentityAndKeepsTheRest(t *testing.T) {
-	out, _ := PrepareChat([]byte(`{"model":"m","temperature":0.5,"user":"{\"device_id\":\"d\"}",
+	out, _, _ := PrepareChat([]byte(`{"model":"m","temperature":0.5,"user":"{\"device_id\":\"d\"}",
 	 "metadata":{"user_id":"x"},"session_id":"s","sessionId":"s","conversation_id":"c","conversationId":"c",
 	 "thread_id":"t","threadId":"t","messages":[]}`), nil)
 	m := decode(t, out)
@@ -202,7 +204,7 @@ func TestPrepareChatDropsTheCallersIdentityAndKeepsTheRest(t *testing.T) {
 }
 
 func TestPrepareChatPinsTheProfilesFields(t *testing.T) {
-	out, _ := PrepareChat([]byte(`{"model":"m","tool_choice":"required","messages":[]}`), map[string]any{"tool_choice": "auto"})
+	out, _, _ := PrepareChat([]byte(`{"model":"m","tool_choice":"required","messages":[]}`), map[string]any{"tool_choice": "auto"})
 	if decode(t, out)["tool_choice"] != "auto" {
 		t.Errorf("the pin did not win: %s", out)
 	}
@@ -210,14 +212,14 @@ func TestPrepareChatPinsTheProfilesFields(t *testing.T) {
 
 func TestPrepareRejectsABodyThatIsNotAnObject(t *testing.T) {
 	for _, body := range []string{"nope", "[1]", `"s"`, ""} {
-		if _, err := PrepareChat([]byte(body), nil); err == nil {
+		if _, _, err := PrepareChat([]byte(body), nil); err == nil {
 			t.Errorf("%q accepted", body)
 		}
 	}
 }
 
 func TestPrepareResponsesBuildsTheBodyFromAChatBody(t *testing.T) {
-	out, err := PrepareResponses([]byte(`{"model":"muse","temperature":0.5,"top_p":0.9,"max_tokens":200,"reasoning_effort":"low",
+	out, _, err := PrepareResponses([]byte(`{"model":"muse","temperature":0.5,"top_p":0.9,"max_tokens":200,"reasoning_effort":"low",
 	 "response_format":{"type":"json_schema","json_schema":{"name":"r","schema":{"type":"object"}}},
 	 "tool_choice":{"type":"function","function":{"name":"lookup"}},"user":"u","metadata":{"a":1},"chat_only_field":1,
 	 "messages":[{"role":"system","content":"be"},{"role":"developer","content":"brief"},
@@ -267,6 +269,26 @@ func TestPrepareResponsesBuildsTheBodyFromAChatBody(t *testing.T) {
 	user := items[0].(map[string]any)["content"].([]any)
 	if user[0].(map[string]any)["type"] != "input_text" || user[1].(map[string]any)["type"] != "input_image" {
 		t.Errorf("user parts = %v", user)
+	}
+}
+
+func TestPrepareChatRenamesBashAndReadToShellAndRead(t *testing.T) {
+	raw := `{"model":"m","messages":[{"role":"assistant","tool_calls":[{"id":"c1","function":{"name":"Bash","arguments":"{}"}}]}],
+	 "tool_choice":{"type":"function","function":{"name":"Bash"}},
+	 "tools":[{"type":"function","function":{"name":"Bash"}},{"type":"function","function":{"name":"Read"}}]}`
+	out, rename, err := PrepareChat([]byte(raw), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rename["shell"] != "Bash" || rename["read"] != "Read" {
+		t.Errorf("rename = %v, want shell->Bash and read->Read", rename)
+	}
+	s := string(out)
+	if strings.Contains(s, `"Bash"`) || strings.Contains(s, `"Read"`) {
+		t.Errorf("outbound carried caller names:\n%s", s)
+	}
+	if !strings.Contains(s, `"name":"shell"`) || !strings.Contains(s, `"name":"read"`) {
+		t.Errorf("outbound missing gate names:\n%s", s)
 	}
 }
 
